@@ -319,6 +319,119 @@ defmodule ProsemirrorEx.Model.Fragment do
     Enum.map(content, &PmNode.to_json/1)
   end
 
+  @doc """
+  Call `f` for every descendant node between the given positions.
+
+  `f` receives `(node, start_pos, parent, index)`. When `f` returns `false`,
+  descending into that node is skipped.
+  """
+  def nodes_between(%__MODULE__{content: content}, from, to, f, node_start \\ 0, parent \\ nil) do
+    do_nodes_between(content, from, to, f, node_start, parent, 0, 0)
+  end
+
+  defp do_nodes_between([], _from, _to, _f, _node_start, _parent, _i, _pos), do: :ok
+
+  defp do_nodes_between(_children, _from, to, _f, _node_start, _parent, _i, pos) when pos >= to,
+    do: :ok
+
+  defp do_nodes_between([child | rest], from, to, f, node_start, parent, i, pos) do
+    child_end = pos + PmNode.node_size(child)
+
+    if child_end > from do
+      result = f.(child, node_start + pos, parent, i)
+
+      if result != false and child.content != nil and child.content.size > 0 do
+        start = pos + 1
+
+        nodes_between(
+          child.content,
+          max(0, from - start),
+          min(child.content.size, to - start),
+          f,
+          node_start + start,
+          child
+        )
+      end
+    end
+
+    do_nodes_between(rest, from, to, f, node_start, parent, i + 1, child_end)
+  end
+
+  @doc """
+  Extract the text between `from` and `to`. When `block_separator` is given,
+  it will be inserted between textblocks. When `leaf_text` is given, it will
+  be used to represent non-text leaf nodes (string or function).
+  """
+  def text_between(%__MODULE__{} = frag, from, to, block_separator \\ "", leaf_text \\ nil) do
+    # Use a process dictionary to accumulate text and track first-block status
+    # (avoids needing an agent/genserver for a simple accumulator in a callback)
+    Process.put(:_pm_text_between_text, "")
+    Process.put(:_pm_text_between_first, true)
+
+    nodes_between(frag, from, to, fn node, pos, _parent, _index ->
+      node_text =
+        cond do
+          PmNode.is_text(node) ->
+            String.slice(node.text, max(from, pos) - pos, to - max(from, pos))
+
+          not Map.get(node.type, :is_leaf, false) ->
+            ""
+
+          is_function(leaf_text, 1) ->
+            leaf_text.(node)
+
+          is_binary(leaf_text) ->
+            leaf_text
+
+          is_function(node.type.spec[:leafText], 1) ->
+            node.type.spec[:leafText].(node)
+
+          true ->
+            ""
+        end
+
+      is_block = Map.get(node.type, :is_block, false)
+      is_leaf = Map.get(node.type, :is_leaf, false)
+
+      is_textblock =
+        is_block and
+          (Map.get(node.type, :is_textblock, false) or Map.get(node.type, :inline_content, false))
+
+      if is_block and ((is_leaf and node_text != "") or is_textblock) and
+           block_separator != nil and block_separator != "" do
+        if Process.get(:_pm_text_between_first) do
+          Process.put(:_pm_text_between_first, false)
+        else
+          Process.put(
+            :_pm_text_between_text,
+            Process.get(:_pm_text_between_text) <> block_separator
+          )
+        end
+      end
+
+      if node_text != "" do
+        Process.put(
+          :_pm_text_between_text,
+          Process.get(:_pm_text_between_text) <> node_text
+        )
+      end
+
+      true
+    end)
+
+    result = Process.get(:_pm_text_between_text)
+    Process.delete(:_pm_text_between_text)
+    Process.delete(:_pm_text_between_first)
+    result
+  end
+
+  @doc "Join child debug strings with \", \"."
+  def to_string_inner(%__MODULE__{content: content}) do
+    content
+    |> Enum.map(&PmNode.debug_string/1)
+    |> Enum.join(", ")
+  end
+
   @doc "Find the first position at which the content of two fragments diverges."
   def find_diff_start(a, b, pos \\ 0), do: Diff.find_diff_start(a, b, pos)
 
