@@ -301,8 +301,8 @@ defmodule ProsemirrorEx.Model.Schema do
   end
 
   @doc "Deserialize a mark from its JSON representation."
-  def mark_from_json(_schema, _json) do
-    raise "not yet implemented: mark_from_json requires from_json support"
+  def mark_from_json(schema, json) do
+    Mark.from_json(schema, json)
   end
 
   # ── Private helpers ──────────────────────────────────────────────

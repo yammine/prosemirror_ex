@@ -157,6 +157,24 @@ defmodule ProsemirrorEx.Model.Mark do
   end
 
   @doc """
+  Deserialize a mark from its JSON representation.
+
+  Takes a schema and a JSON map with `"type"` and optionally `"attrs"` keys.
+  """
+  def from_json(schema, json) do
+    if !json, do: raise("Invalid input for Mark.fromJSON")
+
+    type = schema.marks[json["type"]]
+
+    if !type,
+      do: raise("There is no mark type #{json["type"]} in this schema")
+
+    mark = MarkType.create(type, json["attrs"])
+    MarkType.check_attrs(type, mark.attrs)
+    mark
+  end
+
+  @doc """
   The empty set of marks.
   """
   @spec none() :: [t()]

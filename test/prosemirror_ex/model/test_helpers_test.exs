@@ -4,7 +4,6 @@ defmodule ProsemirrorEx.TestHelpersTest do
   import ProsemirrorEx.TestHelpers
 
   alias ProsemirrorEx.Model.Node, as: PmNode
-  alias ProsemirrorEx.Model.Fragment
 
   describe "test_schema" do
     test "creates a valid schema" do

@@ -4,7 +4,15 @@ defmodule ProsemirrorEx.Model.Node do
   optional attributes, a content Fragment, marks, and (for text nodes) text.
   """
 
-  alias ProsemirrorEx.Model.{Fragment, Mark, CompareDeep}
+  alias ProsemirrorEx.Model.{
+    Fragment,
+    Mark,
+    MarkType,
+    CompareDeep,
+    ContentMatch,
+    NodeType,
+    Schema
+  }
 
   defstruct [:type, :attrs, :content, :marks, :text]
 
@@ -364,26 +372,165 @@ defmodule ProsemirrorEx.Model.Node do
   def replace(_node, _from, _to, _slice),
     do: raise("not yet implemented: replace requires Replace algorithm")
 
-  @doc "Check that this node's content is valid for its type. Stub - requires Schema."
-  def check(_node), do: raise("not yet implemented: check requires Schema")
+  # ── check ──────────────────────────────────────────────────────────────
 
-  @doc "Test whether a given mark or mark type is present in this document in the given range."
-  def can_replace(_node, _from, _to, _type, _marks \\ nil),
-    do: raise("not yet implemented: can_replace requires ContentMatch")
+  @doc """
+  Check that this node's content is valid for its type.
 
-  @doc "Test whether replacing the range from–to with a node of the given type would leave the node's content valid."
-  def can_replace_with(_node, _from, _to, _type, _marks \\ nil),
-    do: raise("not yet implemented: can_replace_with requires ContentMatch")
+  Validates content against the content expression, checks that all
+  attributes are valid, and recursively checks children. Raises on
+  any validation error.
+  """
+  def check(%__MODULE__{} = node) do
+    NodeType.check_content(node.type, node.content || Fragment.empty())
 
-  @doc "Test whether the given node's content can be appended to this node."
-  def can_append(_node, _other),
-    do: raise("not yet implemented: can_append requires ContentMatch")
+    # Check attrs
+    if function_exported?(NodeType, :check_attrs, 2) do
+      NodeType.check_attrs(node.type, node.attrs || %{})
+    end
 
-  @doc "Return a content match at the given index. Stub - requires ContentMatch."
-  def content_match_at(_node, _index),
-    do: raise("not yet implemented: content_match_at requires ContentMatch")
+    # Check marks
+    copy = Mark.none()
 
-  @doc "Deserialize a node from its JSON representation. Stub - requires Schema."
-  def from_json(_schema, _json),
-    do: raise("not yet implemented: from_json requires Schema")
+    copy =
+      Enum.reduce(node.marks || [], copy, fn mark, acc ->
+        MarkType.check_attrs(mark.type, mark.attrs)
+        Mark.add_to_set(mark, acc)
+      end)
+
+    if !Mark.same_set(copy, node.marks || []) do
+      mark_names = Enum.map(node.marks || [], fn m -> m.type.name end) |> Enum.join(", ")
+
+      raise "Invalid collection of marks for node #{node.type.name}: [#{mark_names}]"
+    end
+
+    # Recursively check children
+    Fragment.for_each(node.content || Fragment.empty(), fn child, _offset, _index ->
+      check(child)
+    end)
+  end
+
+  # ── content_match_at ───────────────────────────────────────────────────
+
+  @doc """
+  Return a content match state that represents the match after the
+  first `index` children of this node.
+  """
+  def content_match_at(%__MODULE__{} = node, index) do
+    match =
+      ContentMatch.match_fragment(
+        node.type.content_match,
+        node.content || Fragment.empty(),
+        0,
+        index
+      )
+
+    if !match do
+      raise "Called contentMatchAt on a node with invalid content"
+    end
+
+    match
+  end
+
+  # ── can_replace ────────────────────────────────────────────────────────
+
+  @doc """
+  Test whether replacing the range `from..to` (child indices) in this
+  node with the given `replacement` fragment would leave the node's
+  content valid. `start` and `end_val` optionally restrict which part
+  of the replacement is considered.
+  """
+  def can_replace(node, from, to, replacement \\ nil, start \\ 0, end_val \\ nil)
+
+  def can_replace(%__MODULE__{} = node, from, to, replacement, start, end_val) do
+    replacement = replacement || Fragment.empty()
+    end_val = end_val || Fragment.child_count(replacement)
+
+    one = ContentMatch.match_fragment(content_match_at(node, from), replacement, start, end_val)
+
+    two = one && ContentMatch.match_fragment(one, node.content || Fragment.empty(), to)
+
+    if !two || !two.valid_end do
+      false
+    else
+      Enum.all?(start..(end_val - 1)//1, fn i ->
+        child = Fragment.child(replacement, i)
+        NodeType.allows_marks(node.type, child.marks || [])
+      end)
+    end
+  end
+
+  # ── can_replace_with ───────────────────────────────────────────────────
+
+  @doc """
+  Test whether replacing the range `from..to` (child indices) with a
+  node of the given `type` would leave the node's content valid.
+  """
+  def can_replace_with(%__MODULE__{} = node, from, to, type, marks \\ nil) do
+    if marks && !NodeType.allows_marks(node.type, marks) do
+      false
+    else
+      start = ContentMatch.match_type(content_match_at(node, from), type)
+
+      end_match =
+        start && ContentMatch.match_fragment(start, node.content || Fragment.empty(), to)
+
+      if end_match do
+        end_match.valid_end
+      else
+        false
+      end
+    end
+  end
+
+  # ── can_append ─────────────────────────────────────────────────────────
+
+  @doc """
+  Test whether the given node's content can be appended to this node.
+  If that node's content is not empty, this is equivalent to checking
+  whether the content can be inserted at the end.
+  """
+  def can_append(%__MODULE__{} = node, %__MODULE__{} = other) do
+    if other.content && other.content.size > 0 do
+      can_replace(node, child_count(node), child_count(node), other.content)
+    else
+      NodeType.compatible_content(node.type, other.type)
+    end
+  end
+
+  # ── from_json ──────────────────────────────────────────────────────────
+
+  @doc """
+  Deserialize a node from its JSON representation.
+
+  Takes a schema and a JSON map. Handles text nodes specially.
+  """
+  def from_json(schema, json) do
+    if !json, do: raise("Invalid input for Node.fromJSON")
+
+    marks =
+      if json["marks"] do
+        if !is_list(json["marks"]),
+          do: raise("Invalid mark data for Node.fromJSON")
+
+        Enum.map(json["marks"], &Mark.from_json(schema, &1))
+      end
+
+    if json["type"] == "text" do
+      if !is_binary(json["text"]),
+        do: raise("Invalid text node in JSON")
+
+      Schema.text(schema, json["text"], marks)
+    else
+      content = Fragment.from_json(schema, json["content"])
+      node_type = Schema.node_type(schema, json["type"])
+      node = NodeType.create(node_type, json["attrs"], content, marks)
+
+      if function_exported?(NodeType, :check_attrs, 2) do
+        NodeType.check_attrs(node.type, node.attrs || %{})
+      end
+
+      node
+    end
+  end
 end

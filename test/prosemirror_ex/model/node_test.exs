@@ -688,14 +688,9 @@ defmodule ProsemirrorEx.Model.NodeTest do
       end
     end
 
-    test "check raises" do
-      node = doc([])
-      assert_raise RuntimeError, ~r/not yet implemented/, fn -> PmNode.check(node) end
-    end
-
-    test "from_json raises" do
-      assert_raise RuntimeError, ~r/not yet implemented/, fn ->
-        PmNode.from_json(nil, %{})
+    test "from_json raises on nil input" do
+      assert_raise RuntimeError, ~r/Invalid input/, fn ->
+        PmNode.from_json(%{nodes: %{}, marks: %{}}, nil)
       end
     end
   end

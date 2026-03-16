@@ -432,6 +432,19 @@ defmodule ProsemirrorEx.Model.Fragment do
     |> Enum.join(", ")
   end
 
+  @doc """
+  Deserialize a fragment from its JSON representation.
+
+  Takes a schema and either nil (returns empty fragment) or a list of node JSON maps.
+  """
+  def from_json(_schema, nil), do: empty()
+
+  def from_json(schema, value) when is_list(value) do
+    from_array(Enum.map(value, &PmNode.from_json(schema, &1)))
+  end
+
+  def from_json(_schema, _), do: raise("Invalid input for Fragment.fromJSON")
+
   @doc "Find the first position at which the content of two fragments diverges."
   def find_diff_start(a, b, pos \\ 0), do: Diff.find_diff_start(a, b, pos)
 
