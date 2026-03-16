@@ -254,6 +254,39 @@ defmodule ProsemirrorEx.Model.ContentMatch do
     %__MODULE__{valid_end: true, next: [], wrap_cache: [], _reg: nil, _id: nil}
   end
 
+  @doc """
+  Update the node types stored in this content match's DFA edges.
+  Takes a map of name => updated_node_type. This is needed because
+  during schema construction, content expressions are parsed before
+  all node types have their content_match set, so the DFA edges
+  reference stale types.
+  """
+  def update_node_types(%__MODULE__{_reg: nil}, _node_types), do: :ok
+
+  def update_node_types(%__MODULE__{_reg: reg}, node_types) when is_map(node_types) do
+    # Get all edge entries from the ETS table
+    :ets.foldl(
+      fn
+        {{:edges, key}, edges}, _acc ->
+          updated_edges =
+            Enum.map(edges, fn {type, target_key} ->
+              case Map.get(node_types, type.name) do
+                nil -> {type, target_key}
+                updated_type -> {updated_type, target_key}
+              end
+            end)
+
+          :ets.insert(reg, {{:edges, key}, updated_edges})
+          :ok
+
+        _, acc ->
+          acc
+      end,
+      :ok,
+      reg
+    )
+  end
+
   # ── Registry helpers ──────────────────────────────────────────────
 
   # Get edges for a ContentMatch. For registry-backed states, look up from registry.
@@ -281,7 +314,7 @@ defmodule ProsemirrorEx.Model.ContentMatch do
 
   defmodule TokenStream do
     @moduledoc false
-    defstruct [:string, :node_types, :tokens, :pos, :inline]
+    defstruct [:string, :node_types, :node_names_ordered, :tokens, :pos, :inline]
   end
 
   defp tokenize(string, node_types) do
@@ -289,9 +322,19 @@ defmodule ProsemirrorEx.Model.ContentMatch do
       Regex.split(~r/\s*(?=\b|\W|$)/, string)
       |> Enum.reject(&(&1 == ""))
 
+    # Preserve iteration order by sorting map keys
+    # In JS, OrderedMap preserves insertion order. We need a stable order
+    # for group resolution to match JS behavior. We store the ordered names.
+    ordered_names =
+      case Process.get(:_pm_content_match_node_order) do
+        nil -> Map.keys(node_types) |> Enum.sort()
+        names -> names
+      end
+
     %TokenStream{
       string: string,
       node_types: node_types,
+      node_names_ordered: ordered_names,
       tokens: tokens,
       pos: 0,
       inline: nil
@@ -465,10 +508,14 @@ defmodule ProsemirrorEx.Model.ContentMatch do
 
     case Map.get(types, name) do
       nil ->
+        # Use ordered names to maintain definition order (matches JS OrderedMap behavior)
         result =
-          types
-          |> Map.values()
-          |> Enum.filter(fn type -> NodeType.is_in_group(type, name) end)
+          stream.node_names_ordered
+          |> Enum.map(&Map.get(types, &1))
+          |> Enum.filter(fn
+            nil -> false
+            type -> NodeType.is_in_group(type, name)
+          end)
 
         if result == [] do
           parse_err(stream, "No node type or group '#{name}' found")
