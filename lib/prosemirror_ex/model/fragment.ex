@@ -14,6 +14,7 @@ defmodule ProsemirrorEx.Model.Fragment do
 
   alias ProsemirrorEx.Model.Node, as: PmNode
   alias ProsemirrorEx.Model.RangeError, as: PmRangeError
+  alias ProsemirrorEx.Model.Diff
 
   defstruct content: [], size: 0
 
@@ -317,4 +318,10 @@ defmodule ProsemirrorEx.Model.Fragment do
   def to_json(%__MODULE__{content: content}) do
     Enum.map(content, &PmNode.to_json/1)
   end
+
+  @doc "Find the first position at which the content of two fragments diverges."
+  def find_diff_start(a, b, pos \\ 0), do: Diff.find_diff_start(a, b, pos)
+
+  @doc "Find the first position from the end at which the content of two fragments diverges."
+  def find_diff_end(a, b, pos_a \\ nil, pos_b \\ nil), do: Diff.find_diff_end(a, b, pos_a, pos_b)
 end
