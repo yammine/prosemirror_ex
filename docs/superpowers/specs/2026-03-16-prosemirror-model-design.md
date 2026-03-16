@@ -97,9 +97,11 @@ All fields optional. Unknown fields are ignored.
 
 ```elixir
 %{
-  "default" => any(),                 # default value; nil means attr is required
+  "default" => any(),                 # default value; key ABSENT means attr is required
   "validate" => String.t()            # pipe-separated type names, e.g. "string|number"
 }
+# Important: distinguish missing "default" key (required attr) from "default" => nil
+# (attr has nil/null as default). Use Map.has_key?(spec, "default") to check.
 ```
 
 Validation: the `validate` field supports type strings like `"string"`, `"number"`, `"boolean"`, `"string|number"`. In Elixir, we also accept `{module, function, extra_args}` MFA tuples for custom validators. String-based validation checks Elixir equivalents (e.g., `"string"` checks `is_binary/1`).
@@ -236,6 +238,7 @@ Node.new(type, attrs, content, marks)
 # Properties
 Node.node_size(node)
 Node.child_count(node)
+Node.children(node)              # returns fragment's content list
 Node.is_block(node), is_textblock/1, is_inline/1, is_text/1, is_leaf/1, is_atom_node/1
 Node.inline_content(node)
 Node.text_content(node)
@@ -260,7 +263,7 @@ Node.has_markup(node, type, attrs \\ nil, marks \\ nil)
 Node.copy(node, content)
 Node.mark(node, marks)
 Node.cut(node, from, to \\ nil)
-Node.slice(node, from, to \\ nil)
+Node.slice(node, from, to \\ nil, include_parents \\ false)
 Node.replace(node, from, to, slice)
 
 # Position
@@ -297,10 +300,11 @@ Fragment.descendants(frag, fun)
 Fragment.text_between(frag, from, to, block_sep, leaf_text)
 Fragment.append(frag, other)
 Fragment.cut(frag, from, to)
+Fragment.cut_by_index(frag, from, to)
 Fragment.replace_child(frag, index, node)
 Fragment.add_to_start(frag, node), add_to_end/2
 Fragment.eq(a, b)
-Fragment.find_diff_start(a, b), find_diff_end/2
+Fragment.find_diff_start(a, b), find_diff_end/2  # delegates to Diff module
 Fragment.find_index(frag, pos)
 Fragment.to_json(frag)
 Fragment.from_json(schema, value)
@@ -312,7 +316,7 @@ Fragment.from_json(schema, value)
 Mark.new(type, attrs)
 Mark.add_to_set(mark, set)
 Mark.remove_from_set(mark, set)
-Mark.is_in_set(mark, set)
+Mark.is_in_set(mark, set)         # returns matching %Mark{} or nil (not boolean)
 Mark.eq(a, b)
 Mark.same_set(set_a, set_b)
 Mark.set_from(marks)
@@ -334,7 +338,7 @@ NodeType.create(type, attrs, content, marks)
 NodeType.create_checked(type, attrs, content, marks)
 NodeType.create_and_fill(type, attrs, content, marks)
 NodeType.valid_content(type, content)
-NodeType.check_content(type, content)
+NodeType.check_content(type, content)  # raises on invalid (counterpart to valid_content which returns boolean)
 NodeType.allows_mark_type(type, mark_type)
 NodeType.allows_marks(type, marks), allowed_marks/2
 NodeType.compatible_content(type, other)
@@ -381,6 +385,7 @@ ResolvedPos.before(rpos, depth), after_pos/2
 ResolvedPos.marks(rpos), marks_across/2
 ResolvedPos.shared_depth(rpos, pos)
 ResolvedPos.block_range(rpos, other, pred)
+ResolvedPos.content_match_at(rpos, depth)
 ResolvedPos.same_parent(rpos, other)
 ResolvedPos.pos_at_index(rpos, index, depth)
 ResolvedPos.max(rpos, other), min/2
@@ -391,10 +396,13 @@ NodeRange.parent(range)
 NodeRange.start_index(range), end_index/1
 
 Slice.new(content, open_start, open_end)
-Slice.max_open(fragment)
+Slice.max_open(fragment, open_isolating \\ true)
 Slice.empty()
 Slice.size(slice)
 Slice.eq(a, b)
+Slice.cut(slice, from, to)
+Slice.insert_at(slice, pos, fragment)   # returns %Slice{} | nil
+Slice.remove_between(slice, from, to)
 Slice.to_json(slice), from_json/2
 
 Replace.replace(from_rpos, to_rpos, slice)  # takes ResolvedPos, not integers
