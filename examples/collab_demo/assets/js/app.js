@@ -78,14 +78,9 @@ function createEditor(elementId, statusId, clientID) {
     try {
       sendable = sendableSteps(editor.state)
     } catch (e) {
-      console.error(clientID, "sendableSteps error:", e)
       return
     }
-    if (!sendable) {
-      console.log(clientID, "nothing sendable, version:", getVersion(editor.state))
-      return
-    }
-    console.log(clientID, "sending", sendable.steps.length, "steps at version", sendable.version)
+    if (!sendable) return
 
     sending = true
     const stepsToSend = sendable.steps
