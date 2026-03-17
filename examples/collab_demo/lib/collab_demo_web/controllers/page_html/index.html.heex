@@ -1,0 +1,23 @@
+<div style="max-width: 1200px; margin: 0 auto; padding: 24px; font-family: system-ui, sans-serif;">
+  <h1 style="text-align: center; margin-bottom: 4px;">ProsemirrorEx Collab Demo</h1>
+  <p style="text-align: center; color: #888; margin-bottom: 24px; font-size: 0.85rem;">
+    Two editors sharing a document via Phoenix Channels + ProsemirrorEx.Authority
+  </p>
+
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+    <div style="background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); overflow: hidden;">
+      <div style="padding: 8px 16px; background: #fafafa; border-bottom: 1px solid #eee; font-size: 0.8rem; font-weight: 600; color: #666; display: flex; justify-content: space-between;">
+        <span>Client A</span>
+        <span id="status-a" style="font-weight: 400; font-size: 0.75rem;">connecting...</span>
+      </div>
+      <div id="editor-a" style="padding: 16px; min-height: 300px;"></div>
+    </div>
+    <div style="background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); overflow: hidden;">
+      <div style="padding: 8px 16px; background: #fafafa; border-bottom: 1px solid #eee; font-size: 0.8rem; font-weight: 600; color: #666; display: flex; justify-content: space-between;">
+        <span>Client B</span>
+        <span id="status-b" style="font-weight: 400; font-size: 0.75rem;">connecting...</span>
+      </div>
+      <div id="editor-b" style="padding: 16px; min-height: 300px;"></div>
+    </div>
+  </div>
+</div>
