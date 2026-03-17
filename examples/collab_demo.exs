@@ -346,12 +346,13 @@ defmodule CollabDemo.EditorLive do
       import { Step } from 'https://esm.sh/prosemirror-transform@1.10.4'
       import { Socket } from 'https://esm.sh/phoenix@1.8.5/assets/js/phoenix/index.js?bundle'
 
-      // Connect to Phoenix channel
-      const socket = new Socket("/collab-ws", {})
-      socket.connect()
-
       function createEditor(elementId, toolbarId, statusId, clientID) {
         const statusEl = document.getElementById(statusId)
+
+        // Each editor gets its own socket so both can join the same topic independently
+        const socket = new Socket("/collab-ws", {})
+        socket.connect()
+
         const channel = socket.channel("doc:main", {})
 
         let editor = null
