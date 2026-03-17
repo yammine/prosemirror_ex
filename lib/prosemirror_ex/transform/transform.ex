@@ -199,4 +199,46 @@ defmodule ProsemirrorEx.Transform.Transform do
   def delete_range(tr, from, to) do
     ProsemirrorEx.Transform.Replace.delete_range(tr, from, to)
   end
+
+  # ── Structure helper delegates ─────────────────────────────────────
+
+  @doc "Lift the content in the given range to the given target depth."
+  def lift(tr, range, target) do
+    ProsemirrorEx.Transform.Structure.lift(tr, range, target)
+  end
+
+  @doc "Wrap the content in the given range in the given wrapper nodes."
+  def wrap(tr, range, wrappers) do
+    ProsemirrorEx.Transform.Structure.wrap(tr, range, wrappers)
+  end
+
+  @doc "Set the type of all textblocks (partly) between `from` and `to`."
+  def set_block_type(tr, from, to \\ nil, type, attrs \\ nil) do
+    ProsemirrorEx.Transform.Structure.set_block_type(tr, from, to || from, type, attrs)
+  end
+
+  @doc "Change the type, attributes, and/or marks of the node at `pos`."
+  def set_node_markup(tr, pos, type \\ nil, attrs \\ nil, marks \\ nil) do
+    ProsemirrorEx.Transform.Structure.set_node_markup(tr, pos, type, attrs, marks)
+  end
+
+  @doc "Split the node at the given position."
+  def split(tr, pos, depth \\ 1, types_after \\ nil) do
+    ProsemirrorEx.Transform.Structure.split(tr, pos, depth, types_after)
+  end
+
+  @doc "Join the blocks around the given position."
+  def join(tr, pos, depth \\ 1) do
+    ProsemirrorEx.Transform.Structure.join(tr, pos, depth)
+  end
+
+  @doc "Set a single attribute on the node at pos."
+  def set_node_attribute(tr, pos, attr, value) do
+    step(tr, ProsemirrorEx.Transform.AttrStep.new(pos, attr, value))
+  end
+
+  @doc "Set a document-level attribute."
+  def set_doc_attribute(tr, attr, value) do
+    step(tr, ProsemirrorEx.Transform.DocAttrStep.new(attr, value))
+  end
 end
