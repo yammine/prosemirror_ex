@@ -25,7 +25,10 @@ defmodule CollabDemo.DocServer do
   end
 
   def get_doc, do: GenServer.call(__MODULE__, :get_doc)
-  def receive_steps(client_id, version, steps_json), do: GenServer.call(__MODULE__, {:receive_steps, client_id, version, steps_json})
+
+  def receive_steps(client_id, version, steps_json),
+    do: GenServer.call(__MODULE__, {:receive_steps, client_id, version, steps_json})
+
   def steps_since(version), do: GenServer.call(__MODULE__, {:steps_since, version})
 
   @impl true
@@ -38,7 +41,10 @@ defmodule CollabDemo.DocServer do
           Schema.text(schema, "ProsemirrorEx Collab Demo")
         ]),
         Schema.node(schema, "paragraph", nil, [
-          Schema.text(schema, "Start typing in either editor. Changes sync in real-time via Phoenix Channels + ProsemirrorEx.Authority.")
+          Schema.text(
+            schema,
+            "Start typing in either editor. Changes sync in real-time via Phoenix Channels + ProsemirrorEx.Authority."
+          )
         ]),
         Schema.node(schema, "paragraph", nil, [
           Schema.text(schema, "Try adding "),
@@ -50,7 +56,7 @@ defmodule CollabDemo.DocServer do
       ])
 
     auth = Authority.new(schema, doc)
-    {:ok, %{auth: auth, schema: schema, subscribers: []}}
+    {:ok, %{auth: auth, schema: schema}}
   end
 
   @impl true
@@ -68,7 +74,6 @@ defmodule CollabDemo.DocServer do
 
     case Authority.receive_steps(state.auth, client_id, version, steps) do
       {:ok, new_auth} ->
-        # Notify subscribers
         new_version = new_auth.version
         {:ok, new_steps, client_ids} = Authority.steps_since(new_auth, version)
         steps_json_out = Enum.map(new_steps, &(&1.__struct__.to_json(&1)))
@@ -76,7 +81,8 @@ defmodule CollabDemo.DocServer do
         Phoenix.PubSub.broadcast(
           PhoenixPlayground.PubSub,
           "collab:doc",
-          {:new_steps, %{version: new_version, steps: steps_json_out, client_ids: client_ids}}
+          {:new_steps,
+           %{version: new_version, steps: steps_json_out, client_ids: client_ids}}
         )
 
         {:reply, {:ok, new_version}, %{state | auth: new_auth}}
@@ -105,18 +111,20 @@ defmodule CollabDemo.DocServer do
       "nodes" => [
         {"doc", %{"content" => "block+"}},
         {"paragraph", %{"content" => "inline*", "group" => "block"}},
-        {"heading", %{
-          "content" => "inline*",
-          "group" => "block",
-          "attrs" => %{"level" => %{"default" => 1}}
-        }},
+        {"heading",
+         %{
+           "content" => "inline*",
+           "group" => "block",
+           "attrs" => %{"level" => %{"default" => 1}}
+         }},
         {"blockquote", %{"content" => "block+", "group" => "block"}},
         {"bullet_list", %{"content" => "list_item+", "group" => "block"}},
-        {"ordered_list", %{
-          "content" => "list_item+",
-          "group" => "block",
-          "attrs" => %{"start" => %{"default" => 1}}
-        }},
+        {"ordered_list",
+         %{
+           "content" => "list_item+",
+           "group" => "block",
+           "attrs" => %{"start" => %{"default" => 1}}
+         }},
         {"list_item", %{"content" => "paragraph block*"}},
         {"horizontal_rule", %{"group" => "block"}},
         {"code_block", %{"content" => "text*", "group" => "block", "code" => true}},
@@ -127,14 +135,15 @@ defmodule CollabDemo.DocServer do
         {"bold", %{}},
         {"italic", %{}},
         {"code", %{}},
-        {"link", %{
-          "attrs" => %{
-            "href" => %{},
-            "target" => %{"default" => nil},
-            "rel" => %{"default" => nil},
-            "class" => %{"default" => nil}
-          }
-        }},
+        {"link",
+         %{
+           "attrs" => %{
+             "href" => %{},
+             "target" => %{"default" => nil},
+             "rel" => %{"default" => nil},
+             "class" => %{"default" => nil}
+           }
+         }},
         {"strike", %{}}
       ]
     })
@@ -154,17 +163,27 @@ defmodule CollabDemo.DocChannel do
   end
 
   @impl true
-  def handle_in("steps", %{"version" => version, "steps" => steps, "clientID" => client_id}, socket) do
+  def handle_in(
+        "steps",
+        %{"version" => version, "steps" => steps, "clientID" => client_id},
+        socket
+      ) do
     case CollabDemo.DocServer.receive_steps(client_id, version, steps) do
       {:ok, new_version} ->
         {:reply, {:ok, %{"version" => new_version}}, socket}
 
       {:error, :version_mismatch} ->
-        # Send missed steps so client can rebase
         case CollabDemo.DocServer.steps_since(version) do
           {:ok, steps_json, client_ids, current_version} ->
-            {:reply, {:error, %{"reason" => "version_mismatch", "version" => current_version,
-                                "steps" => steps_json, "clientIDs" => client_ids}}, socket}
+            {:reply,
+             {:error,
+              %{
+                "reason" => "version_mismatch",
+                "version" => current_version,
+                "steps" => steps_json,
+                "clientIDs" => client_ids
+              }}, socket}
+
           _ ->
             {:reply, {:error, %{"reason" => "version_mismatch"}}, socket}
         end
@@ -181,13 +200,13 @@ defmodule CollabDemo.DocChannel do
       "steps" => payload.steps,
       "clientIDs" => payload.client_ids
     })
+
     {:noreply, socket}
   end
 end
 
 defmodule CollabDemo.CollabSocket do
   use Phoenix.Socket
-
   channel "doc:*", CollabDemo.DocChannel
 
   @impl true
@@ -253,15 +272,11 @@ defmodule CollabDemo.EditorLive do
 
       .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
 
-      .header {
-        text-align: center; margin-bottom: 24px;
-      }
+      .header { text-align: center; margin-bottom: 24px; }
       .header h1 { font-size: 1.5rem; color: #333; margin-bottom: 4px; }
       .header p { color: #888; font-size: 0.85rem; }
 
-      .editors {
-        display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
-      }
+      .editors { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 
       .editor-pane {
         background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.12);
@@ -291,9 +306,7 @@ defmodule CollabDemo.EditorLive do
       .toolbar button:hover { background: #f0f0f0; border-color: #ccc; }
       .toolbar button.is-active { background: #333; color: white; border-color: #333; }
 
-      .editor-content {
-        padding: 16px 20px; min-height: 300px; flex: 1;
-      }
+      .editor-content { padding: 16px 20px; min-height: 300px; flex: 1; }
 
       .ProseMirror { outline: none; min-height: 260px; }
       .ProseMirror p { margin-bottom: 0.5em; line-height: 1.6; }
@@ -309,9 +322,7 @@ defmodule CollabDemo.EditorLive do
       .ProseMirror hr { border: none; border-top: 2px solid #eee; margin: 1em 0; }
       .ProseMirror s { text-decoration: line-through; }
 
-      @media (max-width: 768px) {
-        .editors { grid-template-columns: 1fr; }
-      }
+      @media (max-width: 768px) { .editors { grid-template-columns: 1fr; } }
     </style>
 
     <div class="container">
@@ -339,34 +350,34 @@ defmodule CollabDemo.EditorLive do
       </div>
     </div>
 
-    <!-- Suppress LiveView's default JS (we don't need it) -->
-    <script>window.liveSocket = {disconnect(){}, getSocket(){return {conn(){}}}};</script>
-
     <script type="module">
-      // Pin all prosemirror packages to same versions to avoid duplicate instances
-      const PM_DEPS = 'prosemirror-state@1.4.3,prosemirror-model@1.25.1,prosemirror-transform@1.10.4,prosemirror-view@1.38.1'
-      const { Editor } = await import(`https://esm.sh/@tiptap/core@2.11.5?deps=${PM_DEPS}`)
-      const { default: StarterKit } = await import(`https://esm.sh/@tiptap/starter-kit@2.11.5?deps=${PM_DEPS}`)
-      const { collab, sendableSteps, receiveTransaction, getVersion } = await import(`https://esm.sh/prosemirror-collab@1.3.1?deps=${PM_DEPS}`)
-      const { Step } = await import(`https://esm.sh/prosemirror-transform@1.10.4`)
-      const { Socket } = await import('https://esm.sh/phoenix@1.7.18?bundle')
+      // Use a single CDN bundle URL that shares all prosemirror-* internals.
+      // The ?bundle flag tells esm.sh to inline all deps so there is exactly
+      // one copy of prosemirror-state, avoiding the duplicate-PluginKey bug.
+      const tiptap = await import('https://esm.sh/@tiptap/core@2.11.5?bundle')
+      const starterKit = await import('https://esm.sh/@tiptap/starter-kit@2.11.5?bundle')
+      const pmCollab = await import('https://esm.sh/prosemirror-collab@1.3.1?bundle')
+      const pmTransform = await import('https://esm.sh/prosemirror-transform@1.10.4?bundle')
+      const phoenix = await import('https://esm.sh/phoenix@1.7.18?bundle')
+
+      const { Editor } = tiptap
+      const StarterKit = starterKit.default
+      const { collab, sendableSteps, receiveTransaction, getVersion } = pmCollab
+      const { Step } = pmTransform
+      const { Socket } = phoenix
 
       function createEditor(elementId, toolbarId, statusId, clientID) {
         const statusEl = document.getElementById(statusId)
 
-        // Each editor gets its own socket so both can join the same topic independently
         const socket = new Socket("/collab-ws", {})
         socket.connect()
-
         const channel = socket.channel("doc:main", {})
 
         let editor = null
-        let serverVersion = 0
         let sending = false
 
         channel.join()
           .receive("ok", (data) => {
-            serverVersion = data.version
             statusEl.textContent = "connected"
             statusEl.className = "status connected"
 
@@ -374,19 +385,15 @@ defmodule CollabDemo.EditorLive do
               element: document.getElementById(elementId),
               extensions: [
                 StarterKit.configure({ history: false }),
-                collab({ version: serverVersion, clientID }),
+                collab({ version: data.version, clientID }),
               ],
               content: data.doc,
+              onTransaction: ({ transaction }) => {
+                if (transaction.docChanged) trySend()
+              },
             })
 
-            // Build toolbar
             buildToolbar(document.getElementById(toolbarId), editor)
-
-            // Watch for local changes
-            editor.on('transaction', ({ transaction }) => {
-              if (!transaction.docChanged) return
-              trySend()
-            })
           })
           .receive("error", (err) => {
             statusEl.textContent = "error"
@@ -394,52 +401,58 @@ defmodule CollabDemo.EditorLive do
             console.error("Join error:", err)
           })
 
-        // Receive steps from server
         channel.on("steps", (data) => {
           if (!editor) return
-          const state = editor.state
-          const currentVersion = getVersion(state)
-
-          // Filter out steps we already have
+          const currentVersion = getVersion(editor.state)
           if (data.version <= currentVersion) return
 
-          const stepsToApply = data.steps.slice(currentVersion - (data.version - data.steps.length))
-          const clientIDs = data.clientIDs.slice(currentVersion - (data.version - data.clientIDs.length))
-
+          const offset = currentVersion - (data.version - data.steps.length)
+          const stepsToApply = data.steps.slice(offset)
+          const clientIDs = data.clientIDs.slice(offset)
           if (stepsToApply.length === 0) return
 
-          const steps = stepsToApply.map(j => Step.fromJSON(editor.schema, j))
-          const tr = receiveTransaction(state, steps, clientIDs)
-          editor.view.dispatch(tr)
+          try {
+            const steps = stepsToApply.map(j => Step.fromJSON(editor.schema, j))
+            const tr = receiveTransaction(editor.state, steps, clientIDs)
+            editor.view.dispatch(tr)
+          } catch (e) {
+            console.warn("Failed to apply remote steps:", e)
+          }
         })
 
         function trySend() {
           if (sending || !editor) return
-          const sendable = sendableSteps(editor.state)
+
+          let sendable
+          try {
+            sendable = sendableSteps(editor.state)
+          } catch (e) {
+            console.warn("sendableSteps error:", e)
+            return
+          }
           if (!sendable) return
 
           sending = true
-          const stepsJSON = sendable.steps.map(s => s.toJSON())
-
           channel.push("steps", {
             version: sendable.version,
-            steps: stepsJSON,
-            clientID: clientID.toString(),
+            steps: sendable.steps.map(s => s.toJSON()),
+            clientID: clientID,
           })
-            .receive("ok", (data) => {
+            .receive("ok", () => {
               sending = false
-              // Try sending more if queued
               setTimeout(trySend, 0)
             })
             .receive("error", (data) => {
               sending = false
               if (data.reason === "version_mismatch" && data.steps) {
-                // Apply missed steps and retry
-                const state = editor.state
-                const steps = data.steps.map(j => Step.fromJSON(editor.schema, j))
-                const tr = receiveTransaction(state, steps, data.clientIDs)
-                editor.view.dispatch(tr)
-                setTimeout(trySend, 100)
+                try {
+                  const steps = data.steps.map(j => Step.fromJSON(editor.schema, j))
+                  const tr = receiveTransaction(editor.state, steps, data.clientIDs)
+                  editor.view.dispatch(tr)
+                  setTimeout(trySend, 100)
+                } catch (e) {
+                  console.warn("Rebase failed:", e)
+                }
               }
             })
         }
@@ -464,19 +477,13 @@ defmodule CollabDemo.EditorLive do
           btn.textContent = label
           btn.addEventListener('click', cmd)
           container.appendChild(btn)
-
-          editor.on('selectionUpdate', () => {
-            btn.classList.toggle('is-active', active())
-          })
-          editor.on('transaction', () => {
-            btn.classList.toggle('is-active', active())
-          })
+          editor.on('selectionUpdate', () => btn.classList.toggle('is-active', active()))
+          editor.on('transaction', () => btn.classList.toggle('is-active', active()))
         })
       }
 
-      // Create two independent editors with unique client IDs
-      createEditor('editor-a', 'toolbar-a', 'status-a', 'client-' + Math.random().toString(36).slice(2, 8))
-      createEditor('editor-b', 'toolbar-b', 'status-b', 'client-' + Math.random().toString(36).slice(2, 8))
+      createEditor('editor-a', 'toolbar-a', 'status-a', 'client-a-' + Math.random().toString(36).slice(2, 8))
+      createEditor('editor-b', 'toolbar-b', 'status-b', 'client-b-' + Math.random().toString(36).slice(2, 8))
     </script>
     """
   end
