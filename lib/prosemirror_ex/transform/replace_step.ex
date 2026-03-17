@@ -195,7 +195,7 @@ defmodule ProsemirrorEx.Transform.ReplaceAroundStep do
 
   @behaviour ProsemirrorEx.Transform.Step
 
-  alias ProsemirrorEx.Model.{Slice, Fragment, Node}
+  alias ProsemirrorEx.Model.{Slice, Node}
   alias ProsemirrorEx.Transform.{StepMap, StepResult, Mappable, MapResult}
 
   defstruct [:from, :to, :gap_from, :gap_to, :slice, :insert, structure: false]
