@@ -3,7 +3,7 @@ defmodule ProsemirrorEx.Transform.MarkStepTest do
 
   import ProsemirrorEx.TestHelpers
 
-  alias ProsemirrorEx.Model.{Fragment, Slice, Node, Schema, Mark, MarkType}
+  alias ProsemirrorEx.Model.{Node, Mark, MarkType}
 
   alias ProsemirrorEx.Transform.{
     Step,
