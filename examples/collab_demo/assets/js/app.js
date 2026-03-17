@@ -1,8 +1,20 @@
-import { Editor } from "@tiptap/core"
+import { Editor, Extension } from "@tiptap/core"
 import StarterKit from "@tiptap/starter-kit"
 import { collab, sendableSteps, receiveTransaction, getVersion } from "prosemirror-collab"
 import { Step } from "prosemirror-transform"
 import { Socket } from "phoenix"
+
+// Wrap prosemirror-collab's raw Plugin as a Tiptap Extension so it
+// actually gets registered on the editor state.
+const Collaboration = Extension.create({
+  name: "collaboration",
+  addOptions() {
+    return { version: 0, clientID: null }
+  },
+  addProseMirrorPlugins() {
+    return [collab({ version: this.options.version, clientID: this.options.clientID })]
+  },
+})
 
 function createEditor(elementId, statusId, clientID) {
   const statusEl = document.getElementById(statusId)
@@ -24,7 +36,7 @@ function createEditor(elementId, statusId, clientID) {
         element: document.getElementById(elementId),
         extensions: [
           StarterKit.configure({ history: false }),
-          collab({ version: data.version, clientID }),
+          Collaboration.configure({ version: data.version, clientID }),
         ],
         content: data.doc,
         onTransaction: ({ transaction }) => {
@@ -64,9 +76,14 @@ function createEditor(elementId, statusId, clientID) {
     try {
       sendable = sendableSteps(editor.state)
     } catch (e) {
+      console.error(clientID, "sendableSteps error:", e)
       return
     }
-    if (!sendable) return
+    if (!sendable) {
+      console.log(clientID, "nothing sendable, version:", getVersion(editor.state))
+      return
+    }
+    console.log(clientID, "sending", sendable.steps.length, "steps at version", sendable.version)
 
     sending = true
     channel.push("steps", {

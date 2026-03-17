@@ -10,6 +10,8 @@ defmodule CollabDemoWeb.DocChannel do
 
   @impl true
   def handle_in("steps", %{"version" => version, "steps" => steps, "clientID" => client_id}, socket) do
+    require Logger
+    Logger.info("STEPS RECEIVED: client=#{client_id} version=#{version} count=#{length(steps)}")
     case CollabDemo.DocServer.receive_steps(client_id, version, steps) do
       {:ok, new_version} ->
         {:reply, {:ok, %{"version" => new_version}}, socket}
