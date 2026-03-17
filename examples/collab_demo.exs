@@ -339,27 +339,12 @@ defmodule CollabDemo.EditorLive do
       </div>
     </div>
 
-    <script type="importmap">
-    {
-      "imports": {
-        "@tiptap/core": "https://esm.sh/@tiptap/core@2.11.5",
-        "@tiptap/starter-kit": "https://esm.sh/@tiptap/starter-kit@2.11.5",
-        "@tiptap/extension-collaboration": "https://esm.sh/@tiptap/extension-collaboration@2.11.5",
-        "prosemirror-collab": "https://esm.sh/prosemirror-collab@1.3.1",
-        "prosemirror-state": "https://esm.sh/prosemirror-state@1.4.3",
-        "prosemirror-model": "https://esm.sh/prosemirror-model@1.25.1",
-        "prosemirror-transform": "https://esm.sh/prosemirror-transform@1.10.4",
-        "y-prosemirror": "https://esm.sh/y-prosemirror@1.3.4"
-      }
-    }
-    </script>
-
     <script type="module">
-      import { Editor } from '@tiptap/core'
-      import StarterKit from '@tiptap/starter-kit'
-      import { collab, sendableSteps, receiveTransaction, getVersion } from 'prosemirror-collab'
-      import { Step } from 'prosemirror-transform'
-      import { Socket } from '/assets/phoenix/phoenix.esm.js'
+      import { Editor } from 'https://esm.sh/@tiptap/core@2.11.5'
+      import StarterKit from 'https://esm.sh/@tiptap/starter-kit@2.11.5'
+      import { collab, sendableSteps, receiveTransaction, getVersion } from 'https://esm.sh/prosemirror-collab@1.3.1'
+      import { Step } from 'https://esm.sh/prosemirror-transform@1.10.4'
+      import { Socket } from 'https://esm.sh/phoenix@1.8.5/assets/js/phoenix/index.js?bundle'
 
       // Connect to Phoenix channel
       const socket = new Socket("/collab-ws", {})
