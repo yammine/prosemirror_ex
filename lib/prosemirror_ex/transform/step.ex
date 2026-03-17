@@ -63,8 +63,18 @@ defmodule ProsemirrorEx.Transform.Step do
     registry = get_registry()
 
     case Map.get(registry, step_type) do
-      nil -> raise ArgumentError, "No step type #{step_type} defined"
-      module -> module.from_json(schema, json)
+      nil ->
+        # Ensure built-in steps are registered (handles lazy loading)
+        ProsemirrorEx.Transform.StepRegistry.ensure_registered()
+        registry = get_registry()
+
+        case Map.get(registry, step_type) do
+          nil -> raise ArgumentError, "No step type #{step_type} defined"
+          module -> module.from_json(schema, json)
+        end
+
+      module ->
+        module.from_json(schema, json)
     end
   end
 

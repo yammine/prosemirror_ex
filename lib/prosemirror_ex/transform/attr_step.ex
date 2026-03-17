@@ -10,18 +10,6 @@ defmodule ProsemirrorEx.Transform.AttrStep do
   alias ProsemirrorEx.Model.{Slice, Fragment, Node}
   alias ProsemirrorEx.Transform.{StepMap, StepResult, Mappable, MapResult}
 
-  @on_load :register_step
-  @doc false
-  def register_step do
-    try do
-      ProsemirrorEx.Transform.Step.json_id("attr", __MODULE__)
-    rescue
-      ArgumentError -> :ok
-    end
-
-    :ok
-  end
-
   defstruct [:pos, :attr, :value]
 
   @type t :: %__MODULE__{
@@ -120,18 +108,6 @@ defmodule ProsemirrorEx.Transform.DocAttrStep do
   @behaviour ProsemirrorEx.Transform.Step
 
   alias ProsemirrorEx.Transform.{StepMap, StepResult}
-
-  @on_load :register_step
-  @doc false
-  def register_step do
-    try do
-      ProsemirrorEx.Transform.Step.json_id("docAttr", __MODULE__)
-    rescue
-      ArgumentError -> :ok
-    end
-
-    :ok
-  end
 
   defstruct [:attr, :value]
 

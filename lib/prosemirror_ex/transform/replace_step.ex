@@ -10,18 +10,6 @@ defmodule ProsemirrorEx.Transform.ReplaceStep do
   alias ProsemirrorEx.Model.{Slice, Fragment, Node}
   alias ProsemirrorEx.Transform.{StepMap, StepResult, Mappable, MapResult}
 
-  @on_load :register_step
-  @doc false
-  def register_step do
-    try do
-      ProsemirrorEx.Transform.Step.json_id("replace", __MODULE__)
-    rescue
-      ArgumentError -> :ok
-    end
-
-    :ok
-  end
-
   defstruct [:from, :to, :slice, structure: false]
 
   @type t :: %__MODULE__{
@@ -209,18 +197,6 @@ defmodule ProsemirrorEx.Transform.ReplaceAroundStep do
 
   alias ProsemirrorEx.Model.{Slice, Fragment, Node}
   alias ProsemirrorEx.Transform.{StepMap, StepResult, Mappable, MapResult}
-
-  @on_load :register_step
-  @doc false
-  def register_step do
-    try do
-      ProsemirrorEx.Transform.Step.json_id("replaceAround", __MODULE__)
-    rescue
-      ArgumentError -> :ok
-    end
-
-    :ok
-  end
 
   defstruct [:from, :to, :gap_from, :gap_to, :slice, :insert, structure: false]
 

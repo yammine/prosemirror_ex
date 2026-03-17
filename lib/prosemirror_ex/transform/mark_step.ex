@@ -41,17 +41,6 @@ defmodule ProsemirrorEx.Transform.AddMarkStep do
   alias ProsemirrorEx.Model.{Slice, Fragment, Node, Mark, NodeType}
   alias ProsemirrorEx.Transform.{StepMap, StepResult, Mappable, MapResult, MarkStepHelper}
 
-  @on_load :register_step
-  @doc false
-  def register_step do
-    try do
-      ProsemirrorEx.Transform.Step.json_id("addMark", __MODULE__)
-    rescue
-      ArgumentError -> :ok
-    end
-
-    :ok
-  end
 
   defstruct [:from, :to, :mark]
 
@@ -162,17 +151,6 @@ defmodule ProsemirrorEx.Transform.RemoveMarkStep do
   alias ProsemirrorEx.Model.{Slice, Node, Mark}
   alias ProsemirrorEx.Transform.{StepMap, StepResult, Mappable, MapResult, MarkStepHelper}
 
-  @on_load :register_step
-  @doc false
-  def register_step do
-    try do
-      ProsemirrorEx.Transform.Step.json_id("removeMark", __MODULE__)
-    rescue
-      ArgumentError -> :ok
-    end
-
-    :ok
-  end
 
   defstruct [:from, :to, :mark]
 
@@ -272,17 +250,6 @@ defmodule ProsemirrorEx.Transform.AddNodeMarkStep do
   alias ProsemirrorEx.Model.{Slice, Fragment, Node, Mark}
   alias ProsemirrorEx.Transform.{StepMap, StepResult, Mappable, MapResult}
 
-  @on_load :register_step
-  @doc false
-  def register_step do
-    try do
-      ProsemirrorEx.Transform.Step.json_id("addNodeMark", __MODULE__)
-    rescue
-      ArgumentError -> :ok
-    end
-
-    :ok
-  end
 
   defstruct [:pos, :mark]
 
@@ -397,17 +364,6 @@ defmodule ProsemirrorEx.Transform.RemoveNodeMarkStep do
   alias ProsemirrorEx.Model.{Slice, Fragment, Node, Mark}
   alias ProsemirrorEx.Transform.{StepMap, StepResult, Mappable, MapResult}
 
-  @on_load :register_step
-  @doc false
-  def register_step do
-    try do
-      ProsemirrorEx.Transform.Step.json_id("removeNodeMark", __MODULE__)
-    rescue
-      ArgumentError -> :ok
-    end
-
-    :ok
-  end
 
   defstruct [:pos, :mark]
 
