@@ -198,14 +198,27 @@ end
 
 # ── Phoenix Endpoint ─────────────────────────────────────────────────────
 
+defmodule CollabDemo.ErrorHTML do
+  def render(template, _assigns) do
+    Phoenix.Controller.status_message_from_template(template)
+  end
+end
+
 defmodule CollabDemo.Endpoint do
   use Phoenix.Endpoint, otp_app: :phoenix_playground
+
+  @session_options [
+    store: :cookie,
+    key: "_collab_key",
+    signing_salt: "collab_demo_salt"
+  ]
 
   socket "/collab-ws", CollabDemo.CollabSocket,
     websocket: true,
     longpoll: false
 
-  socket "/live", Phoenix.LiveView.Socket
+  socket "/live", Phoenix.LiveView.Socket,
+    websocket: [connect_info: [session: @session_options]]
 
   plug Plug.Static,
     at: "/",
@@ -216,10 +229,7 @@ defmodule CollabDemo.Endpoint do
     pass: ["*/*"],
     json_decoder: Jason
 
-  plug Plug.Session,
-    store: :cookie,
-    key: "_collab_key",
-    signing_salt: "collab_demo_salt"
+  plug Plug.Session, @session_options
 
   plug PhoenixPlayground.Router
 end
@@ -482,6 +492,10 @@ defmodule CollabDemo.EditorLive do
 end
 
 # ── Start ────────────────────────────────────────────────────────────────
+
+Application.put_env(:phoenix_playground, CollabDemo.Endpoint,
+  render_errors: [formats: [html: CollabDemo.ErrorHTML], layout: false]
+)
 
 PhoenixPlayground.start(
   live: CollabDemo.EditorLive,
