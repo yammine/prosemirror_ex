@@ -667,9 +667,11 @@ defmodule ProsemirrorEx.Model.NodeTest do
   # ── stubs ─────────────────────────────────────────────────────────────
 
   describe "stubs" do
-    test "resolve raises" do
-      node = doc([])
-      assert_raise RuntimeError, ~r/not yet implemented/, fn -> PmNode.resolve(node, 0) end
+    test "resolve works" do
+      node = doc([para([txt("hello")])])
+      resolved = PmNode.resolve(node, 0)
+      assert resolved.pos == 0
+      assert resolved.depth == 0
     end
 
     test "slice raises" do

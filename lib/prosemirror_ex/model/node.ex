@@ -361,8 +361,11 @@ defmodule ProsemirrorEx.Model.Node do
 
   # ── Stubs for later tasks ────────────────────────────────────────────
 
-  @doc "Resolve the given position in this document. Stub - requires ResolvedPos."
-  def resolve(_node, _pos), do: raise("not yet implemented: resolve/2 requires ResolvedPos")
+  @doc "Resolve the given position in this document, returning a ResolvedPos."
+  def resolve(%__MODULE__{} = doc, pos) do
+    alias ProsemirrorEx.Model.ResolvedPos
+    ResolvedPos.resolve(doc, pos)
+  end
 
   @doc "Extract a slice of the document between the given positions. Stub - requires Slice."
   def slice(_node, _from, _to, _include_parents \\ false),

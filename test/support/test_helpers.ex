@@ -163,15 +163,6 @@ defmodule ProsemirrorEx.TestHelpers do
     node_type = Schema.node_type(schema, type_name)
     {nodes, tags} = flatten(schema, children)
 
-    # For non-flat (non-text, non-leaf-inline) nodes, offset tags by 1 for the opening token
-    tags =
-      if !node_type.is_text and
-           !(node_type.is_inline and node_type.is_leaf) do
-        Map.new(tags, fn {k, v} -> {k, v + 1} end)
-      else
-        tags
-      end
-
     computed_attrs = NodeType.compute_attrs(node_type, if(attrs == %{}, do: nil, else: attrs))
     content = Fragment.from(nodes)
     node = NodeType.create(node_type, computed_attrs, content, nil)
@@ -228,7 +219,16 @@ defmodule ProsemirrorEx.TestHelpers do
 
         {child_node, child_tags} when is_map(child_tags) ->
           # Result from a node builder (tuple of {node, tags})
-          offset_tags = Map.new(child_tags, fn {k, v} -> {k, v + pos} end)
+          # Add +1 for the child's opening token if it's a non-text, non-inline-leaf node
+          # (matching JS prosemirror-test-builder behavior)
+          extra =
+            if Node.is_text(child_node) do
+              0
+            else
+              1
+            end
+
+          offset_tags = Map.new(child_tags, fn {k, v} -> {k, v + extra + pos} end)
 
           {nodes ++ [child_node], Map.merge(tags, offset_tags), pos + Node.node_size(child_node)}
       end

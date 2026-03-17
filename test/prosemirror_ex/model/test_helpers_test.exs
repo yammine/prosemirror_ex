@@ -146,42 +146,42 @@ defmodule ProsemirrorEx.TestHelpersTest do
   describe "tag tracking" do
     test "tags in text children" do
       {node, tags} = p(["hello<a>world"])
-      assert tags["a"] == 6
-      # 5 chars for "hello" + 1 for paragraph open token
+      assert tags["a"] == 5
+      # 5 chars for "hello", no extra offset at p level (offset added by parent)
       child = PmNode.first_child(node)
       assert child.text == "helloworld"
     end
 
     test "multiple tags" do
       {node, tags} = p(["<a>hello<b>"])
-      assert tags["a"] == 1
-      assert tags["b"] == 6
+      assert tags["a"] == 0
+      assert tags["b"] == 5
       child = PmNode.first_child(node)
       assert child.text == "hello"
     end
 
     test "tags at start and end" do
       {_node, tags} = p(["<a>text<b>"])
-      assert tags["a"] == 1
-      assert tags["b"] == 5
+      assert tags["a"] == 0
+      assert tags["b"] == 4
     end
 
     test "tags propagate through nesting" do
       {_node, tags} = doc([p(["<a>hello<b>"])])
-      # doc adds 1 for its opening token, p adds 1 for its opening token
-      # <a> is at position 0 in text, but +1 for p open, +1 for doc open = 2
-      assert tags["a"] == 2
-      assert tags["b"] == 7
+      # When p is nested in doc, +1 for p open token is added by doc's flatten
+      # <a> is at position 0 in p's content, +1 for p open = 1
+      assert tags["a"] == 1
+      assert tags["b"] == 6
     end
 
     test "tags in mark-wrapped children" do
       {_node, tags} = p([em(["<a>hello"])])
-      assert tags["a"] == 1
+      assert tags["a"] == 0
     end
 
     test "tags after leaf nodes" do
       {_node, tags} = p([em(["hello"]), "<a>world"])
-      assert tags["a"] == 6
+      assert tags["a"] == 5
     end
   end
 
