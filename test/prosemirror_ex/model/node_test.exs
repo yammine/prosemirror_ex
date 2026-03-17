@@ -208,6 +208,97 @@ defmodule ProsemirrorEx.Model.NodeTest do
     %Mark{type: %{name: "strong", rank: 2}, attrs: %{}}
   end
 
+  # ── with_text ──────────────────────────────────────────────────────────
+
+  describe "with_text" do
+    test "returns same node when text unchanged" do
+      node = txt("hello")
+      result = PmNode.with_text(node, "hello")
+      assert result == node
+    end
+
+    test "returns new node with different text" do
+      node = txt("hello")
+      result = PmNode.with_text(node, "world")
+      assert result.text == "world"
+      refute result == node
+    end
+
+    test "preserves marks and type" do
+      marks = [em_mark(), strong_mark()]
+      node = txt("hello", marks)
+      result = PmNode.with_text(node, "bye")
+      assert result.text == "bye"
+      assert result.marks == marks
+      assert result.type == node.type
+    end
+  end
+
+  # ── same_markup ────────────────────────────────────────────────────────
+
+  describe "same_markup" do
+    test "same type, attrs, marks returns true" do
+      a = para([txt("a")])
+      b = para([txt("b")])
+      assert PmNode.same_markup(a, b)
+    end
+
+    test "different type returns false" do
+      a = para([txt("a")])
+      b = doc([para([txt("a")])])
+      refute PmNode.same_markup(a, b)
+    end
+
+    test "different attrs returns false" do
+      a = heading(1, [txt("a")])
+      b = heading(2, [txt("a")])
+      refute PmNode.same_markup(a, b)
+    end
+
+    test "different marks returns false" do
+      a = para([txt("a")], [em_mark()])
+      b = para([txt("a")], [strong_mark()])
+      refute PmNode.same_markup(a, b)
+    end
+
+    test "both text nodes with same markup" do
+      a = txt("hello", [em_mark()])
+      b = txt("world", [em_mark()])
+      assert PmNode.same_markup(a, b)
+    end
+  end
+
+  # ── is_atom_node ───────────────────────────────────────────────────────
+
+  describe "is_atom_node" do
+    test "leaf nodes are atoms (hr, br, img)" do
+      assert PmNode.is_atom_node(hr_node())
+      assert PmNode.is_atom_node(br_node())
+      assert PmNode.is_atom_node(img_node())
+    end
+
+    test "text nodes are atoms (leaf)" do
+      assert PmNode.is_atom_node(txt("hi"))
+    end
+
+    test "non-leaf nodes are not atoms" do
+      refute PmNode.is_atom_node(para([txt("hi")]))
+      refute PmNode.is_atom_node(doc([para([txt("hi")])]))
+    end
+  end
+
+  # ── inline_content ─────────────────────────────────────────────────────
+
+  describe "inline_content" do
+    test "paragraph has inline content" do
+      assert PmNode.inline_content(para([txt("hi")]))
+    end
+
+    test "doc does not have inline content" do
+      refute PmNode.inline_content(doc([para([txt("hi")])]))
+    end
+  end
+
   # ── debug_string ──────────────────────────────────────────────────────
 
   describe "debug_string" do
@@ -572,6 +663,28 @@ defmodule ProsemirrorEx.Model.NodeTest do
       result = PmNode.node_at(node, 100)
       assert result == nil
     end
+
+    test "deeply nested node" do
+      node = doc([blockquote_node([para([txt("deep")])])])
+      # Position 2 is inside blockquote > paragraph, at the text node
+      result = PmNode.node_at(node, 2)
+      assert result.type.name == "text"
+      assert result.text == "deep"
+    end
+
+    test "leaf node position" do
+      node = doc([para([txt("a"), img_node(), txt("b")])])
+      # Position 0 = paragraph, position 1 = text "a" (offset 0)
+      # "a" has size 1, so img is at position 2
+      result = PmNode.node_at(node, 2)
+      assert result.type.name == "image"
+    end
+
+    test "position 0 returns first child" do
+      node = doc([para([txt("first")]), para([txt("second")])])
+      result = PmNode.node_at(node, 0)
+      assert result.type.name == "paragraph"
+    end
   end
 
   # ── child_after / child_before ────────────────────────────────────────
@@ -594,6 +707,25 @@ defmodule ProsemirrorEx.Model.NodeTest do
       assert index == 1
       assert offset == 3
     end
+
+    test "at end of content returns nil child" do
+      node = doc([para([txt("a")])])
+      # Position 3 = end of content (para size = 2 + 1 = 3)
+      {child, index, offset} = PmNode.child_after(node, 3)
+      assert child == nil
+      assert index == 1
+      assert offset == 3
+    end
+
+    test "inside a text node" do
+      node = para([txt("hello")])
+      # Position 2 is inside the text node "hello"
+      {child, index, offset} = PmNode.child_after(node, 2)
+      assert child.type.name == "text"
+      assert child.text == "hello"
+      assert index == 0
+      assert offset == 0
+    end
   end
 
   describe "child_before" do
@@ -608,6 +740,24 @@ defmodule ProsemirrorEx.Model.NodeTest do
     test "returns child before position" do
       node = doc([para([txt("a")]), para([txt("b")])])
       # Position 3 = end of first para
+      {child, index, offset} = PmNode.child_before(node, 3)
+      assert child.type.name == "paragraph"
+      assert index == 0
+      assert offset == 0
+    end
+
+    test "at end of content" do
+      node = doc([para([txt("a")]), para([txt("b")])])
+      # Total content size = 3 + 3 = 6
+      {child, index, offset} = PmNode.child_before(node, 6)
+      assert child.type.name == "paragraph"
+      assert index == 1
+      assert offset == 3
+    end
+
+    test "between two block nodes" do
+      node = doc([para([txt("a")]), para([txt("b")]), para([txt("c")])])
+      # Position 3 = boundary between first and second para
       {child, index, offset} = PmNode.child_before(node, 3)
       assert child.type.name == "paragraph"
       assert index == 0
@@ -634,6 +784,31 @@ defmodule ProsemirrorEx.Model.NodeTest do
       node = doc([para([txt("bold", [strong_mark()])])])
       mark = strong_mark()
       refute PmNode.range_has_mark(node, 0, 0, mark)
+    end
+
+    test "search by mark type (not mark instance)" do
+      node = doc([para([txt("bold", [strong_mark()])])])
+      assert PmNode.range_has_mark(node, 0, node.content.size, %{name: "strong"})
+    end
+
+    test "partial range that doesn't include the mark" do
+      # "plain" (5 chars) then "bold" (4 chars) with strong
+      # In the paragraph: plain occupies positions 1..6, bold occupies 6..10
+      # Doc positions: para open at 0, text starts at 1
+      node = doc([para([txt("plain"), txt("bold", [strong_mark()])])])
+      # Only search within the "plain" text range (positions 0..6)
+      refute PmNode.range_has_mark(node, 0, 6, strong_mark())
+    end
+
+    test "nested content with marks" do
+      node =
+        doc([
+          blockquote_node([
+            para([txt("emphasized", [em_mark()])])
+          ])
+        ])
+
+      assert PmNode.range_has_mark(node, 0, node.content.size, em_mark())
     end
   end
 

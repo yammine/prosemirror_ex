@@ -76,9 +76,25 @@ defmodule ProsemirrorEx.Model.ProtocolsTest do
       assert result =~ "paragraph"
     end
 
-    test "Fragment to_string" do
+    test "Fragment to_string for empty fragment" do
       result = Kernel.to_string(Fragment.empty())
       assert result == "<fragment>"
+    end
+
+    test "Fragment to_string for non-empty fragment" do
+      {doc_node, _} = doc([p(["hello"]), p(["world"])])
+      result = Kernel.to_string(doc_node.content)
+      assert is_binary(result)
+      assert result =~ "paragraph"
+      assert result =~ "hello"
+      assert result =~ "world"
+    end
+
+    test "Fragment string interpolation for non-empty fragment" do
+      {doc_node, _} = doc([p(["test"])])
+      result = "#{doc_node.content}"
+      assert result =~ "paragraph"
+      assert result =~ "test"
     end
 
     test "Slice to_string" do

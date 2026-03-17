@@ -206,6 +206,54 @@ defmodule ProsemirrorEx.Model.MarkTest do
     end
   end
 
+  # ===================== is_in_set tests =====================
+
+  describe "is_in_set" do
+    test "returns true when mark is found in set" do
+      set = [em(), strong(), code()]
+      assert Mark.is_in_set(strong(), set)
+    end
+
+    test "returns false when mark is not found" do
+      set = [em(), strong()]
+      refute Mark.is_in_set(code(), set)
+    end
+
+    test "matches by type AND attrs (link with different href)" do
+      set = [em(), link("http://foo")]
+      assert Mark.is_in_set(link("http://foo"), set)
+      refute Mark.is_in_set(link("http://bar"), set)
+    end
+
+    test "works with non-exclusive marks (remark)" do
+      set = [remark(1), remark(2)]
+      assert Mark.is_in_set(remark(1), set)
+      refute Mark.is_in_set(remark(3), set)
+    end
+  end
+
+  # ===================== set_from tests =====================
+
+  describe "set_from" do
+    test "nil returns empty list" do
+      assert Mark.set_from(nil) == []
+    end
+
+    test "empty list returns empty list" do
+      assert Mark.set_from([]) == []
+    end
+
+    test "single mark returns list with that mark" do
+      result = Mark.set_from(em())
+      assert result == [em()]
+    end
+
+    test "already a list returns it sorted by rank" do
+      result = Mark.set_from([code(), em(), strong()])
+      assert Enum.map(result, fn m -> m.type.name end) == ["em", "strong", "code"]
+    end
+  end
+
   # ===================== removeFromSet tests =====================
 
   describe "removeFromSet" do

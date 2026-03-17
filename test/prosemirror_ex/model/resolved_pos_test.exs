@@ -306,6 +306,390 @@ defmodule ProsemirrorEx.Model.ResolvedPosTest do
     end
   end
 
+  # ── text_offset tests ───────────────────────────────────────────────
+
+  describe "ResolvedPos.text_offset" do
+    test "returns 0 at the start of a textblock" do
+      d = test_doc()
+      # Position 1 is at the start of p("ab") content
+      rpos = Node.resolve(d, 1)
+      assert ResolvedPos.text_offset(rpos) == 0
+    end
+
+    test "returns offset inside a text node" do
+      d = test_doc()
+      # Position 2 is inside "ab" (after "a"), text_offset = 1
+      rpos = Node.resolve(d, 2)
+      assert ResolvedPos.text_offset(rpos) == 1
+    end
+
+    test "returns 0 at block boundary" do
+      d = test_doc()
+      # Position 4 is between p and blockquote at doc level
+      rpos = Node.resolve(d, 4)
+      assert ResolvedPos.text_offset(rpos) == 0
+    end
+
+    test "returns offset inside deeper text node" do
+      d = test_doc()
+      # Position 7 is inside "cd" (after "c"), text_offset = 1
+      rpos = Node.resolve(d, 7)
+      assert ResolvedPos.text_offset(rpos) == 1
+    end
+
+    test "returns 0 at end of textblock" do
+      d = test_doc()
+      # Position 3 is at end of p("ab") content. The resolve loop finds
+      # rem == 0 after the text node, so the path's last offset equals pos.
+      # text_offset = pos - last(path) = 3 - 3 = 0
+      rpos = Node.resolve(d, 3)
+      assert ResolvedPos.text_offset(rpos) == 0
+    end
+  end
+
+  # ── index / index_after tests ──────────────────────────────────────
+
+  describe "ResolvedPos.index and index_after" do
+    test "index is 0 at start of block" do
+      d = test_doc()
+      # Position 1 is at start of p("ab"), index into p is 0
+      rpos = Node.resolve(d, 1)
+      assert ResolvedPos.index(rpos) == 0
+    end
+
+    test "index_after reflects position after current node" do
+      d = test_doc()
+      # Position 3 is at end of p("ab") content, past the "ab" text node.
+      # index = 1 (past the text child), text_offset = 0,
+      # index_after = 1 + 0 = 1
+      rpos = Node.resolve(d, 3)
+      assert ResolvedPos.index(rpos) == 1
+      assert ResolvedPos.index_after(rpos) == 1
+    end
+
+    test "index at doc level" do
+      d = test_doc()
+      # Position 0: at doc level, before first child
+      rpos = Node.resolve(d, 0)
+      assert ResolvedPos.index(rpos, 0) == 0
+      assert ResolvedPos.index_after(rpos, 0) == 0
+
+      # Position 4: between p and blockquote at doc level, index = 1
+      rpos4 = Node.resolve(d, 4)
+      assert ResolvedPos.index(rpos4, 0) == 1
+      assert ResolvedPos.index_after(rpos4, 0) == 1
+
+      # Position 12: at end of doc, past both children, index = 2
+      rpos12 = Node.resolve(d, 12)
+      assert ResolvedPos.index(rpos12, 0) == 2
+      assert ResolvedPos.index_after(rpos12, 0) == 2
+    end
+
+    test "index at various depths in nested content" do
+      d = test_doc()
+      # Position 8 is between "cd" (em) and "ef" in the inner paragraph
+      # At depth 2 (the inner p), index = 1 (after "cd" node, before "ef" node)
+      rpos = Node.resolve(d, 8)
+      assert ResolvedPos.index(rpos, 2) == 1
+      assert ResolvedPos.index_after(rpos, 2) == 1
+
+      # At depth 1 (the blockquote), index = 0 (the inner p)
+      assert ResolvedPos.index(rpos, 1) == 0
+    end
+  end
+
+  # ── marks_across tests ─────────────────────────────────────────────
+
+  describe "ResolvedPos.marks_across" do
+    test "returns marks within same marked text" do
+      {doc_node, _tags} = doc([p([em(["hello"])])])
+      from = Node.resolve(doc_node, 2)
+      to = Node.resolve(doc_node, 4)
+      marks = ResolvedPos.marks_across(from, to)
+      schema = test_schema()
+      em_mark = Schema.mark(schema, "em")
+      assert marks != nil
+      assert Mark.is_in_set(em_mark, marks)
+    end
+
+    test "returns marks across boundary between marked and unmarked text" do
+      {doc_node, _tags} = doc([p([em(["hello"]), " world"])])
+      # Position 1 is start of p content, "hello" is at positions 1-6 (with em)
+      # " world" is at positions 6-12
+      # from is inside "hello" (em), to is inside " world" (no marks)
+      from = Node.resolve(doc_node, 2)
+      to = Node.resolve(doc_node, 8)
+      marks = ResolvedPos.marks_across(from, to)
+      schema = test_schema()
+      em_mark = Schema.mark(schema, "em")
+      # marks_across returns the marks of the node after `from`, filtered by non-inclusive
+      # The node after from at index is the em text, so em mark is present
+      assert marks != nil
+      assert Mark.is_in_set(em_mark, marks)
+    end
+
+    test "returns nil when no inline content after position" do
+      {doc_node, _tags} = doc([p(["hello"])])
+      # Position 6 is at the end of p content, no node after
+      from = Node.resolve(doc_node, 6)
+      to = Node.resolve(doc_node, 6)
+      marks = ResolvedPos.marks_across(from, to)
+      assert marks == nil
+    end
+  end
+
+  # ── parent and doc tests ───────────────────────────────────────────
+
+  describe "ResolvedPos.parent and doc" do
+    test "parent returns the immediate parent node" do
+      d = test_doc()
+      # Position 2 is inside p("ab"), parent should be the paragraph
+      rpos = Node.resolve(d, 2)
+      parent = ResolvedPos.parent(rpos)
+      assert parent.type.name == "paragraph"
+    end
+
+    test "doc returns the top-level document" do
+      d = test_doc()
+      rpos = Node.resolve(d, 2)
+      doc_node = ResolvedPos.doc(rpos)
+      assert Node.eq(doc_node, d)
+    end
+
+    test "parent at deeper nesting returns the inner parent" do
+      d = test_doc()
+      # Position 8 is inside the inner p within blockquote
+      rpos = Node.resolve(d, 8)
+      parent = ResolvedPos.parent(rpos)
+      assert parent.type.name == "paragraph"
+      # The parent should be the inner paragraph (has 2 children: em("cd") and "ef")
+      assert Node.child_count(parent) == 2
+    end
+
+    test "parent at blockquote level" do
+      d = test_doc()
+      # Position 5 is at start of blockquote content
+      rpos = Node.resolve(d, 5)
+      parent = ResolvedPos.parent(rpos)
+      assert parent.type.name == "blockquote"
+    end
+
+    test "doc always returns the same root regardless of depth" do
+      d = test_doc()
+      rpos_shallow = Node.resolve(d, 0)
+      rpos_deep = Node.resolve(d, 8)
+      assert Node.eq(ResolvedPos.doc(rpos_shallow), ResolvedPos.doc(rpos_deep))
+    end
+  end
+
+  # ── start and end_pos tests ────────────────────────────────────────
+
+  describe "ResolvedPos.start and end_pos" do
+    test "at depth 0 (doc level)" do
+      d = test_doc()
+      rpos = Node.resolve(d, 2)
+      assert ResolvedPos.start(rpos, 0) == 0
+      assert ResolvedPos.end_pos(rpos, 0) == 12
+    end
+
+    test "at depth 1 (first-level block)" do
+      d = test_doc()
+      # Position 2 is inside p("ab"), at depth 1
+      rpos = Node.resolve(d, 2)
+      assert ResolvedPos.start(rpos, 1) == 1
+      assert ResolvedPos.end_pos(rpos, 1) == 3
+    end
+
+    test "at deeper level (inner paragraph)" do
+      d = test_doc()
+      # Position 8 is inside the inner p, depth 2
+      rpos = Node.resolve(d, 8)
+      assert ResolvedPos.start(rpos, 2) == 6
+      assert ResolvedPos.end_pos(rpos, 2) == 10
+    end
+
+    test "blockquote level start and end" do
+      d = test_doc()
+      rpos = Node.resolve(d, 8)
+      # At depth 1 (blockquote)
+      assert ResolvedPos.start(rpos, 1) == 5
+      assert ResolvedPos.end_pos(rpos, 1) == 11
+    end
+
+    test "default depth uses current depth" do
+      d = test_doc()
+      rpos = Node.resolve(d, 2)
+      # Default depth is rpos.depth which is 1 (inside paragraph)
+      assert ResolvedPos.start(rpos) == 1
+      assert ResolvedPos.end_pos(rpos) == 3
+    end
+  end
+
+  # ── before and after_pos tests ─────────────────────────────────────
+
+  describe "ResolvedPos.before and after_pos" do
+    test "position before and after block node at depth 1" do
+      d = test_doc()
+      # Position 2 is inside p("ab"), depth 1
+      rpos = Node.resolve(d, 2)
+      # before(depth=1) = start(1) - 1 = 1 - 1 = 0
+      assert ResolvedPos.before(rpos, 1) == 0
+      # after_pos(depth=1) = end_pos(1) + 1 = 3 + 1 = 4
+      assert ResolvedPos.after_pos(rpos, 1) == 4
+    end
+
+    test "position before and after blockquote" do
+      d = test_doc()
+      rpos = Node.resolve(d, 8)
+      # At depth 1 (blockquote): before = 4, after = 12
+      assert ResolvedPos.before(rpos, 1) == 4
+      assert ResolvedPos.after_pos(rpos, 1) == 12
+    end
+
+    test "position before and after inner paragraph" do
+      d = test_doc()
+      rpos = Node.resolve(d, 8)
+      # At depth 2 (inner p): before = start(2) - 1 = 6 - 1 = 5
+      assert ResolvedPos.before(rpos, 2) == 5
+      # after_pos(2) = end_pos(2) + 1 = 10 + 1 = 11
+      assert ResolvedPos.after_pos(rpos, 2) == 11
+    end
+
+    test "raises for depth 0" do
+      d = test_doc()
+      rpos = Node.resolve(d, 2)
+      assert_raise ArgumentError, fn -> ResolvedPos.before(rpos, 0) end
+      assert_raise ArgumentError, fn -> ResolvedPos.after_pos(rpos, 0) end
+    end
+
+    test "at depth+1 returns original position" do
+      d = test_doc()
+      rpos = Node.resolve(d, 2)
+      # depth+1 = 2, before returns rpos.pos, after returns rpos.pos
+      assert ResolvedPos.before(rpos, rpos.depth + 1) == 2
+      assert ResolvedPos.after_pos(rpos, rpos.depth + 1) == 2
+    end
+  end
+
+  # ── NodeRange accessor tests ───────────────────────────────────────
+
+  describe "NodeRange accessors" do
+    test "parent returns the shared ancestor" do
+      d = test_doc()
+      from = Node.resolve(d, 2)
+      to = Node.resolve(d, 3)
+      range = ResolvedPos.block_range(from, to)
+      assert range != nil
+      parent = NodeRange.parent(range)
+      # The range at depth 0 means the parent is the doc
+      assert Node.eq(parent, d)
+    end
+
+    test "start returns the correct position" do
+      d = test_doc()
+      from = Node.resolve(d, 2)
+      to = Node.resolve(d, 3)
+      range = ResolvedPos.block_range(from, to)
+      assert range != nil
+      # Range depth is 0, start = before(from, 1) = 0
+      assert NodeRange.start(range) == 0
+    end
+
+    test "end_pos returns the correct position" do
+      d = test_doc()
+      from = Node.resolve(d, 2)
+      to = Node.resolve(d, 3)
+      range = ResolvedPos.block_range(from, to)
+      assert range != nil
+      # Range depth is 0, end_pos = after_pos(to, 1) = 4
+      assert NodeRange.end_pos(range) == 4
+    end
+
+    test "start_index and end_index on cross-block range" do
+      d = test_doc()
+      from = Node.resolve(d, 2)
+      to = Node.resolve(d, 9)
+      range = ResolvedPos.block_range(from, to)
+      assert range != nil
+      assert range.depth == 0
+      # start_index = index(from, 0) = 0
+      assert NodeRange.start_index(range) == 0
+      # end_index = index_after(to, 0) = 2 (both children covered)
+      assert NodeRange.end_index(range) == 2
+    end
+
+    test "parent of range within blockquote" do
+      d = test_doc()
+      # Both positions in the inner paragraph within blockquote
+      from = Node.resolve(d, 7)
+      to = Node.resolve(d, 9)
+      range = ResolvedPos.block_range(from, to)
+      assert range != nil
+      parent = NodeRange.parent(range)
+      # The inner p has inline content, so block_range goes up to depth 1 (blockquote)
+      assert parent.type.name == "blockquote"
+    end
+  end
+
+  # ── block_range edge cases ─────────────────────────────────────────
+
+  describe "block_range edge cases" do
+    test "returns nil when predicate rejects all ancestors" do
+      d = test_doc()
+      from = Node.resolve(d, 2)
+      to = Node.resolve(d, 3)
+      # Predicate that always returns false
+      range = ResolvedPos.block_range(from, to, fn _node -> false end)
+      assert range == nil
+    end
+
+    test "with custom predicate accepting only specific node type" do
+      d = test_doc()
+      from = Node.resolve(d, 7)
+      to = Node.resolve(d, 9)
+      # Accept only blockquote
+      range =
+        ResolvedPos.block_range(from, to, fn node -> node.type.name == "blockquote" end)
+
+      assert range != nil
+      assert range.depth == 1
+      parent = NodeRange.parent(range)
+      assert parent.type.name == "blockquote"
+    end
+
+    test "range spanning multiple blocks at same level" do
+      {d, _tags} = doc([p(["one"]), p(["two"]), p(["three"])])
+      from = Node.resolve(d, 2)
+      # Position in "three" — doc structure: <p>one</p><p>two</p><p>three</p>
+      # p("one") = 1+3+1 = 5, p("two") = 1+3+1 = 5, p("three") = 1+5+1 = 7
+      # Positions: 0 [doc open], 1-4 p("one"), 5 [between], 6-9 p("two"), 10 [between], 11-16 p("three"), 17
+      to = Node.resolve(d, 14)
+      range = ResolvedPos.block_range(from, to)
+      assert range != nil
+      assert range.depth == 0
+      assert NodeRange.start_index(range) == 0
+      assert NodeRange.end_index(range) == 3
+    end
+
+    test "block_range with single position defaults to self" do
+      d = test_doc()
+      from = Node.resolve(d, 2)
+      range = ResolvedPos.block_range(from)
+      assert range != nil
+      # When from == to and both in a textblock (inline content), depth goes to parent
+      assert range.depth == 0
+    end
+
+    test "swaps from and to when to < from" do
+      d = test_doc()
+      from = Node.resolve(d, 9)
+      to = Node.resolve(d, 7)
+      range = ResolvedPos.block_range(from, to)
+      assert range != nil
+      assert range.depth == 1
+    end
+  end
+
   # ── Helper functions ────────────────────────────────────────────────
 
   defp assert_node_match(nil, nil, _msg), do: :ok
