@@ -551,6 +551,13 @@ defmodule ProsemirrorEx.Model.SchemaTest do
       assert m1 === m2
     end
 
+    test "create with explicit empty map attrs returns cached instance" do
+      schema = test_schema()
+      em = schema.marks["em"]
+      m = MarkType.create(em, %{})
+      assert m === em.instance
+    end
+
     test "create with attrs" do
       schema = test_schema()
       link = schema.marks["link"]
@@ -589,6 +596,66 @@ defmodule ProsemirrorEx.Model.SchemaTest do
       set = [strong_mark]
 
       assert MarkType.is_in_set(em, set) == nil
+    end
+  end
+
+  # ── MarkType.check_attrs ────────────────────────────────────────
+
+  describe "MarkType.check_attrs" do
+    test "raises on unsupported attribute name" do
+      schema = test_schema()
+      em = schema.marks["em"]
+
+      assert_raise RuntimeError, ~r/Unsupported attribute/, fn ->
+        MarkType.check_attrs(em, %{"bogus" => "value"})
+      end
+    end
+
+    test "calls validate function when present" do
+      test_pid = self()
+
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "text*"}},
+            {"text", %{}}
+          ],
+          "marks" => [
+            {"validated",
+             %{
+               "attrs" => %{
+                 "color" => %{
+                   "default" => "red",
+                   "validate" => fn val -> send(test_pid, {:validated, val}) end
+                 }
+               }
+             }}
+          ]
+        })
+
+      mark_type = schema.marks["validated"]
+      MarkType.check_attrs(mark_type, %{"color" => "blue"})
+
+      assert_received {:validated, "blue"}
+    end
+
+    test "handles non-function validate gracefully" do
+      mark_type = %MarkType{
+        name: "test",
+        attrs: %{
+          "size" => %{has_default: true, default: 12, validate: :some_atom}
+        }
+      }
+
+      assert MarkType.check_attrs(mark_type, %{"size" => 14}) == :ok
+    end
+
+    test "passes when all attrs are valid and no validate function" do
+      schema = test_schema()
+      link = schema.marks["link"]
+
+      assert MarkType.check_attrs(link, %{"href" => "https://example.com", "title" => "Ex"}) ==
+               :ok
     end
   end
 
@@ -836,6 +903,117 @@ defmodule ProsemirrorEx.Model.SchemaTest do
       assert mark_schema != nil
       assert Map.has_key?(mark_schema.marks, "em")
       assert Map.has_key?(mark_schema.marks, "strong")
+    end
+  end
+
+  # ── NodeType.is_in_group with nil groups ──────────────────────────
+
+  describe "NodeType.is_in_group with nil groups" do
+    test "returns false when groups is nil" do
+      node_type = %NodeType{name: "test", groups: nil}
+      assert NodeType.is_in_group(node_type, "block") == false
+    end
+  end
+
+  # ── NodeType.allowed_marks partial filtering ──────────────────────
+
+  describe "NodeType.allowed_marks partial filtering" do
+    test "returns only the allowed marks when some are filtered out" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "block+"}},
+            {"paragraph",
+             %{"content" => "inline*", "group" => "block", "marks" => "em"}},
+            {"text", %{"group" => "inline"}}
+          ],
+          "marks" => [
+            {"em", %{}},
+            {"strong", %{}}
+          ]
+        })
+
+      em = Schema.mark(schema, "em")
+      strong = Schema.mark(schema, "strong")
+      result = NodeType.allowed_marks(schema.nodes["paragraph"], [em, strong])
+
+      assert length(result) == 1
+      assert hd(result).type.name == "em"
+    end
+  end
+
+  # ── NodeType.check_attrs ──────────────────────────────────────────
+
+  describe "NodeType.check_attrs" do
+    test "raises on unsupported attribute name" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "block+"}},
+            {"paragraph", %{"content" => "inline*", "group" => "block"}},
+            {"text", %{"group" => "inline"}}
+          ]
+        })
+
+      assert_raise RuntimeError, ~r/Unsupported attribute/, fn ->
+        NodeType.check_attrs(schema.nodes["paragraph"], %{"bogus" => "value"})
+      end
+    end
+
+    test "calls validate function when present" do
+      test_pid = self()
+
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "block+"}},
+            {"paragraph",
+             %{
+               "content" => "inline*",
+               "group" => "block",
+               "attrs" => %{
+                 "align" => %{
+                   "default" => "left",
+                   "validate" => fn val -> send(test_pid, {:validated, val}) end
+                 }
+               }
+             }},
+            {"text", %{"group" => "inline"}}
+          ]
+        })
+
+      NodeType.check_attrs(schema.nodes["paragraph"], %{"align" => "center"})
+
+      assert_received {:validated, "center"}
+    end
+
+    test "handles non-function validate gracefully" do
+      node_type = %NodeType{
+        name: "test",
+        attrs: %{
+          "size" => %{has_default: true, default: 12, validate: :some_atom}
+        }
+      }
+
+      assert NodeType.check_attrs(node_type, %{"size" => 14}) == :ok
+    end
+
+    test "passes when all attrs are valid and no validate function" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "block+"}},
+            {"heading",
+             %{
+               "content" => "inline*",
+               "group" => "block",
+               "attrs" => %{"level" => %{"default" => 1}}
+             }},
+            {"text", %{"group" => "inline"}}
+          ]
+        })
+
+      assert NodeType.check_attrs(schema.nodes["heading"], %{"level" => 2}) == :ok
     end
   end
 end

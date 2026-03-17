@@ -59,12 +59,26 @@ defmodule ProsemirrorEx.Model.DiffTest do
     %PmNode{type: heading_type(), attrs: %{}, content: content, marks: []}
   end
 
+  defp hr_type,
+    do: %{
+      name: "horizontal_rule",
+      is_leaf: true,
+      is_text: false,
+      is_block: true,
+      is_inline: false,
+      spec: %{}
+    }
+
   defp bold_mark do
     %Mark{type: %ProsemirrorEx.Model.MarkType{name: "bold", rank: 1}, attrs: %{}}
   end
 
   # Helper to build a fragment from a list of nodes
   defp frag(nodes), do: Fragment.from_array(nodes)
+
+  defp hr_node do
+    %PmNode{type: hr_type(), attrs: %{}, content: Fragment.empty(), marks: []}
+  end
 
   describe "find_diff_start/3" do
     test "returns nil for identical fragments" do
@@ -157,6 +171,50 @@ defmodule ProsemirrorEx.Model.DiffTest do
       # Characters: a=a, b=b, then "ab"[2] doesn't exist but "abcd"[2]='c'.
       # pos = 1 + 2 = 3.
       assert Fragment.find_diff_start(a, b) == 3
+    end
+
+    test "with explicit pos argument offsets the result" do
+      # Calling find_diff_start/3 with an explicit starting pos
+      a = frag([para_node([text_node("hello")])])
+      b = frag([para_node([text_node("world")])])
+      # Without offset: diff at pos 1 (enter para, then text differs at char 0)
+      assert Fragment.find_diff_start(a, b, 0) == 1
+      # With offset of 10: result should be 10 + 1 = 11
+      assert Fragment.find_diff_start(a, b, 10) == 11
+    end
+
+    test "with explicit pos argument and identical fragments returns nil" do
+      a = frag([para_node([text_node("hello")])])
+      b = frag([para_node([text_node("hello")])])
+      assert Fragment.find_diff_start(a, b, 100) == nil
+    end
+
+    test "with explicit pos argument and length mismatch" do
+      a = frag([para_node([text_node("a")])])
+      b = frag([para_node([text_node("a")]), para_node([text_node("b")])])
+      # Without offset: diff at pos 3 (after first para of size 3)
+      assert Fragment.find_diff_start(a, b, 0) == 3
+      # With offset of 20: result should be 20 + 3 = 23
+      assert Fragment.find_diff_start(a, b, 20) == 23
+    end
+
+    test "same-markup non-text nodes with identical content followed by differing sibling" do
+      # Two fragments where the first child is a blockquote with identical content.
+      # Since the blockquotes are eq, the diff is found at the second sibling.
+      a = frag([blockquote_node([para_node([text_node("same")])]), para_node([text_node("x")])])
+      b = frag([blockquote_node([para_node([text_node("same")])]), para_node([text_node("y")])])
+      # blockquote size = 2 + (2 + 4) = 8. Both blockquotes are eq, skip to next.
+      # pos after blockquote = 8. Then enter para (pos=9). Text "x" vs "y" differ at 0.
+      assert Fragment.find_diff_start(a, b) == 9
+    end
+
+    test "empty-content leaf nodes with same markup followed by differing sibling" do
+      # Two fragments with an hr (leaf, empty content) followed by differing paras
+      a = frag([hr_node(), para_node([text_node("a")])])
+      b = frag([hr_node(), para_node([text_node("b")])])
+      # hr node_size = 1 (leaf). Both hrs are eq. Skip to next.
+      # pos after hr = 1. Enter para (pos=2). Text "a" vs "b" differ at char 0.
+      assert Fragment.find_diff_start(a, b) == 2
     end
   end
 
@@ -259,6 +317,54 @@ defmodule ProsemirrorEx.Model.DiffTest do
       #     same=0: 'c'=='c', same=1, posA=4, posB=4
       #     same=1: 'b'=='x', no. Return {a: 4, b: 4}
       assert Fragment.find_diff_end(a, b) == %{a: 4, b: 4}
+    end
+
+    test "with explicit pos_a and pos_b arguments" do
+      a = frag([para_node([text_node("hello")])])
+      b = frag([para_node([text_node("world")])])
+      # a.size = 7, b.size = 7
+      # With explicit positions 17 and 27 (offsets of +10 and +20 from default 7):
+      # Recurse into para (same markup): find_diff_end(content, content, 16, 26)
+      #   Text "hello" vs "world", no common suffix. Return {a: 16, b: 26}.
+      assert Fragment.find_diff_end(a, b, 17, 27) == %{a: 16, b: 26}
+    end
+
+    test "with explicit pos arguments and identical fragments returns nil" do
+      a = frag([para_node([text_node("hello")])])
+      b = frag([para_node([text_node("hello")])])
+      assert Fragment.find_diff_end(a, b, 100, 200) == nil
+    end
+
+    test "with explicit pos arguments and length mismatch" do
+      a = frag([para_node([text_node("a")]), para_node([text_node("b")])])
+      b = frag([para_node([text_node("b")])])
+      # a.size = 6, b.size = 3
+      # With pos_a=16, pos_b=13: last children both para("b"), eq. posA=16-3=13, posB=13-3=10.
+      # iA=1, iB=0. iB==0, iA!=0. Return {a: 13, b: 10}.
+      assert Fragment.find_diff_end(a, b, 16, 13) == %{a: 13, b: 10}
+    end
+
+    test "same-markup non-text nodes with identical content followed by differing sibling from end" do
+      # Two fragments where the last child (blockquote) has identical content.
+      # The diff is found at the preceding sibling.
+      a = frag([para_node([text_node("x")]), blockquote_node([para_node([text_node("same")])])])
+      b = frag([para_node([text_node("y")]), blockquote_node([para_node([text_node("same")])])])
+      # blockquote size = 2 + (2 + 4) = 8. para size = 2 + 1 = 3.
+      # a.size = 3 + 8 = 11, b.size = 11.
+      # From end: last children are blockquotes, they're eq. posA=11-8=3, posB=11-8=3.
+      # Next: iA=1, iB=1. childA=para("x"), childB=para("y"). Same markup.
+      # Recurse into content: text "x" vs "y" differ. Return {a: 2, b: 2}.
+      assert Fragment.find_diff_end(a, b) == %{a: 2, b: 2}
+    end
+
+    test "empty-content leaf nodes with same markup followed by differing sibling from end" do
+      # Two fragments with differing paras followed by an hr (leaf, empty content)
+      a = frag([para_node([text_node("a")]), hr_node()])
+      b = frag([para_node([text_node("b")]), hr_node()])
+      # hr node_size = 1 (leaf). Both hrs are eq. posA=4-1=3, posB=4-1=3.
+      # Next: childA=para("a"), childB=para("b"). Same markup. Content differs.
+      # Recurse into content: text "a" vs "b". Return {a: 2, b: 2}.
+      assert Fragment.find_diff_end(a, b) == %{a: 2, b: 2}
     end
   end
 end

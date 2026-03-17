@@ -415,6 +415,14 @@ defmodule ProsemirrorEx.Model.ContentMatchTest do
     end
   end
 
+  # ── Schema-based helpers for find_wrapping / compute_wrapping ────
+
+  defp schema_match(type_name) do
+    schema = ProsemirrorEx.TestHelpers.test_schema()
+    type = ProsemirrorEx.Model.Schema.node_type(schema, type_name)
+    {type.content_match, schema}
+  end
+
   # ── fillBefore tests ──────────────────────────────────────────────
 
   describe "fillBefore" do
@@ -559,6 +567,253 @@ defmodule ProsemirrorEx.Model.ContentMatchTest do
         doc([p()]),
         nil
       )
+    end
+  end
+
+  # ── find_wrapping tests ──────────────────────────────────────────
+
+  describe "find_wrapping" do
+    test "returns empty list when target matches directly" do
+      {cm, schema} = schema_match("doc")
+      para_type = ProsemirrorEx.Model.Schema.node_type(schema, "paragraph")
+      result = ContentMatch.find_wrapping(cm, para_type)
+      assert result == []
+    end
+
+    test "finds paragraph wrapping for text inside a blockquote" do
+      {cm, schema} = schema_match("blockquote")
+      text_type = ProsemirrorEx.Model.Schema.node_type(schema, "text")
+      result = ContentMatch.find_wrapping(cm, text_type)
+      assert result != nil
+      names = Enum.map(result, & &1.name)
+      assert names == ["paragraph"]
+    end
+
+    test "finds paragraph wrapping for text inside a doc" do
+      {cm, schema} = schema_match("doc")
+      text_type = ProsemirrorEx.Model.Schema.node_type(schema, "text")
+      result = ContentMatch.find_wrapping(cm, text_type)
+      assert result != nil
+      names = Enum.map(result, & &1.name)
+      assert names == ["paragraph"]
+    end
+
+    test "returns nil when no wrapping is possible" do
+      # paragraph expects inline*, so we try to put a block node (paragraph) inside
+      {cm, schema} = schema_match("paragraph")
+      para_type = ProsemirrorEx.Model.Schema.node_type(schema, "paragraph")
+      result = ContentMatch.find_wrapping(cm, para_type)
+      assert result == nil
+    end
+
+    test "finds wrapping for hard_break inside doc" do
+      {cm, schema} = schema_match("doc")
+      br_type = ProsemirrorEx.Model.Schema.node_type(schema, "hard_break")
+      result = ContentMatch.find_wrapping(cm, br_type)
+      assert result != nil
+      names = Enum.map(result, & &1.name)
+      assert names == ["paragraph"]
+    end
+  end
+
+  # ── compute_wrapping tests ─────────────────────────────────────────
+
+  describe "compute_wrapping" do
+    test "returns empty list when target matches directly" do
+      {cm, schema} = schema_match("doc")
+      para_type = ProsemirrorEx.Model.Schema.node_type(schema, "paragraph")
+      result = ContentMatch.compute_wrapping(cm, para_type)
+      assert result == []
+    end
+
+    test "finds paragraph wrapping for text inside a blockquote" do
+      {cm, schema} = schema_match("blockquote")
+      text_type = ProsemirrorEx.Model.Schema.node_type(schema, "text")
+      result = ContentMatch.compute_wrapping(cm, text_type)
+      assert result != nil
+      names = Enum.map(result, & &1.name)
+      assert names == ["paragraph"]
+    end
+
+    test "returns nil when no wrapping is possible" do
+      {cm, schema} = schema_match("paragraph")
+      para_type = ProsemirrorEx.Model.Schema.node_type(schema, "paragraph")
+      result = ContentMatch.compute_wrapping(cm, para_type)
+      assert result == nil
+    end
+  end
+
+  # ── default_type tests ─────────────────────────────────────────────
+
+  describe "default_type" do
+    test "returns first generatable type for block+" do
+      cm = get("block+")
+      result = ContentMatch.default_type(cm)
+      assert result != nil
+      # blockquote is the first block type alphabetically, but order depends on
+      # group resolution, which returns members in map order. The important thing
+      # is that it returns a non-text, non-required-attrs block type.
+      assert result.is_block == true
+      assert result.is_text == false
+    end
+
+    test "returns a type for inline*" do
+      cm = get("inline*")
+      result = ContentMatch.default_type(cm)
+      assert result != nil
+      # Should be a non-text inline type (hard_break or image)
+      assert result.is_inline == true
+      assert result.is_text == false
+    end
+
+    test "returns nil for empty match" do
+      cm = ContentMatch.empty()
+      result = ContentMatch.default_type(cm)
+      assert result == nil
+    end
+
+    test "returns the specific type for a single-type expression" do
+      cm = get("paragraph")
+      result = ContentMatch.default_type(cm)
+      assert result != nil
+      assert result.name == "paragraph"
+    end
+  end
+
+  # ── inline_content tests ───────────────────────────────────────────
+
+  describe "inline_content" do
+    test "returns true for inline*" do
+      cm = get("inline*")
+      assert ContentMatch.inline_content(cm) == true
+    end
+
+    test "returns false for block+" do
+      cm = get("block+")
+      assert ContentMatch.inline_content(cm) == false
+    end
+
+    test "returns false for empty match" do
+      cm = ContentMatch.empty()
+      assert ContentMatch.inline_content(cm) == false
+    end
+
+    test "returns true for a specific inline type" do
+      cm = get("hard_break*")
+      assert ContentMatch.inline_content(cm) == true
+    end
+
+    test "returns false for a specific block type" do
+      cm = get("paragraph+")
+      assert ContentMatch.inline_content(cm) == false
+    end
+  end
+
+  # ── edge_count tests ───────────────────────────────────────────────
+
+  describe "edge_count" do
+    test "returns 1 for a single type expression" do
+      cm = get("paragraph")
+      assert ContentMatch.edge_count(cm) == 1
+    end
+
+    test "returns 0 for empty match" do
+      cm = ContentMatch.empty()
+      assert ContentMatch.edge_count(cm) == 0
+    end
+
+    test "returns multiple edges for block+ (one per block type)" do
+      cm = get("block+")
+      count = ContentMatch.edge_count(cm)
+      # There are many block types: paragraph, heading, blockquote, horizontal_rule,
+      # code_block, ordered_list, bullet_list
+      assert count > 1
+    end
+
+    test "returns correct count for a choice expression" do
+      cm = get("(paragraph | heading)")
+      assert ContentMatch.edge_count(cm) == 2
+    end
+  end
+
+  # ── edge tests ─────────────────────────────────────────────────────
+
+  describe "edge" do
+    test "returns {type, next_match} for first edge" do
+      cm = get("paragraph")
+      {type, next_match} = ContentMatch.edge(cm, 0)
+      assert type.name == "paragraph"
+      assert %ContentMatch{} = next_match
+    end
+
+    test "returned next_match has valid_end true for single required element" do
+      cm = get("paragraph")
+      {_type, next_match} = ContentMatch.edge(cm, 0)
+      assert next_match.valid_end == true
+    end
+
+    test "can get second edge from a choice" do
+      cm = get("(paragraph | heading)")
+      {type0, _} = ContentMatch.edge(cm, 0)
+      {type1, _} = ContentMatch.edge(cm, 1)
+      names = Enum.sort([type0.name, type1.name])
+      assert names == ["heading", "paragraph"]
+    end
+
+    test "raises on out-of-range index" do
+      cm = get("paragraph")
+
+      assert_raise RuntimeError, ~r/no 5th edge/, fn ->
+        ContentMatch.edge(cm, 5)
+      end
+    end
+
+    test "raises on out-of-range for empty match" do
+      cm = ContentMatch.empty()
+
+      assert_raise RuntimeError, ~r/no 0th edge/, fn ->
+        ContentMatch.edge(cm, 0)
+      end
+    end
+  end
+
+  # ── compatible tests ───────────────────────────────────────────────
+
+  describe "compatible" do
+    test "two block+ matches are compatible" do
+      cm_a = get("block+")
+      cm_b = get("block+")
+      assert ContentMatch.compatible(cm_a, cm_b) == true
+    end
+
+    test "block+ and inline* are not compatible" do
+      cm_block = get("block+")
+      cm_inline = get("inline*")
+      assert ContentMatch.compatible(cm_block, cm_inline) == false
+    end
+
+    test "inline* and inline* are compatible" do
+      cm_a = get("inline*")
+      cm_b = get("inline*")
+      assert ContentMatch.compatible(cm_a, cm_b) == true
+    end
+
+    test "paragraph and paragraph are compatible" do
+      cm_a = get("paragraph")
+      cm_b = get("paragraph")
+      assert ContentMatch.compatible(cm_a, cm_b) == true
+    end
+
+    test "paragraph and heading are not compatible" do
+      cm_a = get("paragraph")
+      cm_b = get("heading")
+      assert ContentMatch.compatible(cm_a, cm_b) == false
+    end
+
+    test "paragraph and block+ are compatible (paragraph is in block group)" do
+      cm_a = get("paragraph")
+      cm_b = get("block+")
+      assert ContentMatch.compatible(cm_a, cm_b) == true
     end
   end
 end
