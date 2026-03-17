@@ -64,6 +64,8 @@ function createEditor(elementId, statusId, clientID) {
       const steps = newSteps.map(j => Step.fromJSON(editor.schema, j))
       const tr = receiveTransaction(editor.state, steps, newClientIDs)
       editor.view.dispatch(tr)
+      // After confirming/rebasing, send any pending steps
+      setTimeout(trySend, 0)
     } catch (e) {
       console.warn("Failed to apply remote steps:", e)
     }
@@ -86,14 +88,16 @@ function createEditor(elementId, statusId, clientID) {
     console.log(clientID, "sending", sendable.steps.length, "steps at version", sendable.version)
 
     sending = true
+    const stepsToSend = sendable.steps
     channel.push("steps", {
       version: sendable.version,
-      steps: sendable.steps.map(s => s.toJSON()),
+      steps: stepsToSend.map(s => s.toJSON()),
       clientID: clientID,
     })
       .receive("ok", () => {
+        // The broadcast will confirm our steps via receiveTransaction.
+        // Just unlock sending so the next batch can go when ready.
         sending = false
-        setTimeout(trySend, 0)
       })
       .receive("error", (data) => {
         sending = false
@@ -102,7 +106,8 @@ function createEditor(elementId, statusId, clientID) {
             const steps = data.steps.map(j => Step.fromJSON(editor.schema, j))
             const tr = receiveTransaction(editor.state, steps, data.clientIDs)
             editor.view.dispatch(tr)
-            setTimeout(trySend, 100)
+            // After rebasing, try sending again
+            setTimeout(trySend, 50)
           } catch (e) {
             console.warn("Rebase failed:", e)
           }
