@@ -23,9 +23,10 @@ All modules under `ProsemirrorEx.Transform`:
 
 ```
 lib/prosemirror_ex/transform/
+├── mappable.ex            # Mappable protocol (map/3, map_result/3)
 ├── map_result.ex          # MapResult struct
-├── step_map.ex            # StepMap struct (position change triples)
-├── mapping.ex             # Mapping struct (chains StepMaps with mirror support)
+├── step_map.ex            # StepMap struct (position change triples) — implements Mappable
+├── mapping.ex             # Mapping struct (chains StepMaps with mirror support) — implements Mappable
 ├── step.ex                # Step behaviour + StepResult struct + step registry
 ├── replace_step.ex        # ReplaceStep + ReplaceAroundStep
 ├── mark_step.ex           # AddMarkStep, RemoveMarkStep, AddNodeMarkStep, RemoveNodeMarkStep
@@ -37,18 +38,41 @@ lib/prosemirror_ex/transform/
 └── mark.ex                # addMark, removeMark, clearIncompatible helpers
 ```
 
+### Mappable Protocol
+
+```elixir
+defprotocol ProsemirrorEx.Transform.Mappable do
+  @doc "Map a position through this mapping."
+  def map(mappable, pos, assoc \\ 1)
+
+  @doc "Map a position, returning a MapResult with deletion info."
+  def map_result(mappable, pos, assoc \\ 1)
+end
+```
+
+Both `StepMap` and `Mapping` implement this protocol. Third-party code can implement it for custom mapping types.
+
 ## Data Structures
 
 ### MapResult
 
 ```elixir
-defstruct [:pos, :deleted, :deleted_before, :deleted_after, :deleted_across, :recover]
+defstruct [:pos, :del_info, :recover]
 # pos: non_neg_integer()
-# deleted: boolean() — position was in a deleted range (considering assoc)
-# deleted_before: boolean()
-# deleted_after: boolean()
-# deleted_across: boolean() — deletion spans across position
-# recover: number | nil — recovery value for mirror mapping
+# del_info: non_neg_integer() — bitmask encoding deletion info
+# recover: non_neg_integer() | nil — recovery value for mirror mapping
+#
+# Derived properties (computed from del_info bitmask):
+#   deleted(assoc) — position was in a deleted range
+#   deleted_before — bit 1
+#   deleted_after — bit 2
+#   deleted_across — bit 1 AND bit 2
+#
+# Recovery value encoding:
+#   make_recover(index, offset) — packs range index + offset into single integer
+#   recover_index(value) — extracts range index (value &&& 0xFFFF)  (actually: floor(value / 0x10000) for 48-bit safe)
+#   recover_offset(value) — extracts offset (value - recover_index * 0x10000)
+# Uses multiplication rather than bitwise to maintain 48-bit precision (matching JS).
 ```
 
 ### StepMap
@@ -66,12 +90,16 @@ Represents position changes from a single step as a compact array of triples. Ea
 ```elixir
 defstruct [:maps, :mirror, :from, :to]
 # maps: [StepMap.t()] — ordered list of step maps
-# mirror: [{integer(), integer()}] | nil — pairs of mirrored step indices
+# mirror: [integer()] | nil — flat list of pairs [a, b, c, d, ...] where (a,b), (c,d) are mirror pairs
 # from: integer() — start index for iteration
 # to: integer() — end index for iteration
 ```
 
-Chains multiple StepMaps into a pipeline. The mirror system enables position recovery in collaborative editing: when mapping through a step that deletes a position, if a mirror step exists later, the position is recovered instead of lost. Recovery values use float encoding to maintain 48-bit precision.
+Chains multiple StepMaps into a pipeline. The mirror system enables position recovery in collaborative editing: when mapping through a step that deletes a position, if a mirror step exists later, the position is recovered instead of lost.
+
+`append_map(mapping, map, mirrors)` takes `mirrors` as a single integer (the index of the mirrored map in the maps list), matching the JS signature. `get_mirror(mapping, n)` looks up the mirror partner for map at index `n`.
+
+`append_mapping_inverted` appends maps from another mapping in reverse order with `inverted: true` on each StepMap, rather than creating new StepMap instances.
 
 ### StepResult
 
@@ -110,7 +138,7 @@ Default implementations: `get_map` returns `StepMap.empty()`, `merge` returns `n
 
 ### Step Registry
 
-Step modules register with a string JSON ID via `Step.json_id("replace", ReplaceStep)`. Uses a module attribute or persistent_term for the registry. `Step.from_json(schema, json)` dispatches to the registered module's `from_json/2`.
+Step modules register with a string JSON ID via `Step.json_id("replace", ReplaceStep)`. Uses `:persistent_term` for the global registry (survives across processes, supports runtime registration). `Step.from_json(schema, json)` reads `json["stepType"]` and dispatches to the registered module's `from_json/2`.
 
 ### Step Subclasses (8 total)
 
@@ -135,7 +163,7 @@ Step modules register with a string JSON ID via `Step.json_id("replace", Replace
 
 ```elixir
 StepMap.new(ranges \\ [])
-StepMap.empty()
+StepMap.empty()              # cached module attribute, not a new allocation
 StepMap.offset(n)
 StepMap.map(step_map, pos, assoc \\ 1)
 StepMap.map_result(step_map, pos, assoc \\ 1)
@@ -149,9 +177,10 @@ StepMap.for_each(step_map, f)    # iterate ranges as {old_start, old_end, new_st
 Mapping.new(maps \\ [], mirror \\ nil, from \\ 0, to \\ nil)
 Mapping.map(mapping, pos, assoc \\ 1)
 Mapping.map_result(mapping, pos, assoc \\ 1)
-Mapping.append_map(mapping, map, mirrors \\ nil)
+Mapping.append_map(mapping, map, mirrors \\ nil)  # mirrors: integer (index of mirrored map)
 Mapping.append_mapping(mapping, other)
 Mapping.append_mapping_inverted(mapping, other)
+Mapping.get_mirror(mapping, n)                    # find mirror partner for map at index n
 Mapping.slice(mapping, from, to)
 Mapping.invert(mapping)
 ```
@@ -192,7 +221,7 @@ Transform.delete_range(tr, from, to)
 # Structure
 Transform.lift(tr, range, target)
 Transform.wrap(tr, range, wrappers)
-Transform.set_block_type(tr, from, to \\ from, type, attrs \\ nil)
+Transform.set_block_type(tr, from, to \\ from, type, attrs \\ nil)  # attrs can be a fn (Node.t() -> map())
 Transform.set_node_markup(tr, pos, type \\ nil, attrs \\ nil, marks \\ nil)
 Transform.split(tr, pos, depth \\ 1, types_after \\ nil)
 Transform.join(tr, pos, depth \\ 1)
@@ -205,8 +234,8 @@ Transform.set_doc_attribute(tr, attr, value)
 Transform.add_mark(tr, from, to, mark)
 Transform.remove_mark(tr, from, to, mark \\ nil)
 Transform.add_node_mark(tr, pos, mark)
-Transform.remove_node_mark(tr, pos, mark)
-Transform.clear_incompatible(tr, pos, parent_type, match \\ nil)
+Transform.remove_node_mark(tr, pos, mark)       # mark can be Mark or MarkType
+Transform.clear_incompatible(tr, pos, parent_type, match \\ nil, clear_newlines \\ true)
 ```
 
 ### Exported Utility Functions
@@ -247,6 +276,29 @@ Same conventions as prosemirror-model:
 - `StepResult.from_replace/4` catches `ReplaceError` and converts to `StepResult.fail`
 - Step `map/2` returns `nil` when a step can't be mapped (position deleted)
 
+## The Fitter Algorithm (replace.ex)
+
+The `Fitter` is the most complex algorithmic piece (~250 lines in JS). It computes how to fit a `Slice` into a document gap between `$from` and `$to`.
+
+### Data structures
+
+- **Frontier**: a stack of `%{type: NodeType, match: ContentMatch, content: Fragment, wrapper: bool, open_end: int, depth: int}` entries representing the open right edge of the replacement
+- **Unplaced**: a `%{fragment: Fragment, open_start: int, open_end: int}` tracking remaining slice content
+- **Placed**: a list of `Fragment` entries, one per depth, accumulating placed content
+
+### Algorithm phases
+
+1. **Initialize**: build frontier from `$from`'s nesting, set unplaced to the slice
+2. **Main loop**: while unplaced content remains:
+   - `find_fittable()` — two-pass search: try direct match at each frontier level, then try wrapping
+   - If fittable found: `place_nodes()` moves content from unplaced to placed
+   - If not: `open_more()` increases slice open depth, or `drop_node()` removes the front node
+3. **must_move_inline()**: if inline content exists after the gap, pull it into a frontier textblock
+4. **close()**: reconcile frontier with `$to`, filling required content via `ContentMatch.fill_before`
+5. **Result**: either a `ReplaceStep` or `ReplaceAroundStep`
+
+The agent implementing this MUST fetch and port `replace.ts` line-by-line from https://raw.githubusercontent.com/ProseMirror/prosemirror-transform/master/src/replace.ts
+
 ## Implementation Order
 
 1. **MapResult** — no dependencies
@@ -260,9 +312,9 @@ Same conventions as prosemirror-model:
 9. **AttrStep + DocAttrStep** — depends on Step, StepMap, Model
 10. **Transform struct + core methods** — depends on Step, Mapping
 11. **mark.ex helpers** — depends on Transform, mark steps
-12. **structure.ex** — depends on Transform, ReplaceStep, mark helpers
-13. **replace.ex (Fitter)** — depends on Transform, ReplaceStep, ReplaceAroundStep, structure
-14. **Wire Transform convenience methods** — connect all helpers to Transform
+12. **replace.ex (Fitter + replaceStep)** — depends on ReplaceStep, ReplaceAroundStep, Model. Does NOT depend on structure.ex.
+13. **structure.ex** — depends on Transform, ReplaceStep, mark helpers, replace.ex (for insertPoint)
+14. **Wire Transform convenience methods** — connect replace.ex (replaceRange, deleteRange), structure.ex (lift, wrap, etc.), mark.ex to Transform
 15. **Integration tests + JSON step round-trips**
 
 ## Testing Strategy
