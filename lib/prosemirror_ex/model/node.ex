@@ -367,13 +367,46 @@ defmodule ProsemirrorEx.Model.Node do
     ResolvedPos.resolve(doc, pos)
   end
 
-  @doc "Extract a slice of the document between the given positions. Stub - requires Slice."
-  def slice(_node, _from, _to, _include_parents \\ false),
-    do: raise("not yet implemented: slice requires Slice")
+  @doc "Extract a slice of the document between the given positions."
+  def slice(node, from, to \\ nil, include_parents \\ false)
 
-  @doc "Replace a range of the document. Stub - requires Replace algorithm."
-  def replace(_node, _from, _to, _slice),
-    do: raise("not yet implemented: replace requires Replace algorithm")
+  def slice(%__MODULE__{} = node, from, nil, include_parents) do
+    slice(node, from, (node.content || Fragment.empty()).size, include_parents)
+  end
+
+  def slice(%__MODULE__{} = node, from, to, include_parents) do
+    alias ProsemirrorEx.Model.{ResolvedPos, Slice}
+
+    if from == to do
+      Slice.empty()
+    else
+      from_pos = ResolvedPos.resolve(node, from)
+      to_pos = ResolvedPos.resolve(node, to)
+      depth = if include_parents, do: 0, else: ResolvedPos.shared_depth(from_pos, to)
+      start = ResolvedPos.start(from_pos, depth)
+      node_at_depth = ResolvedPos.node(from_pos, depth)
+      content = Fragment.cut(node_at_depth.content, from_pos.pos - start, to_pos.pos - start)
+      Slice.new(content, from_pos.depth - depth, to_pos.depth - depth)
+    end
+  end
+
+  @doc "Replace a range of the document with the given slice."
+  def replace(node, from, to \\ nil, slice \\ nil)
+
+  def replace(%__MODULE__{} = node, from, nil, nil) do
+    replace(node, from, from, ProsemirrorEx.Model.Slice.empty())
+  end
+
+  def replace(%__MODULE__{} = node, from, to, nil) do
+    replace(node, from, to, ProsemirrorEx.Model.Slice.empty())
+  end
+
+  def replace(%__MODULE__{} = node, from, to, slice) do
+    alias ProsemirrorEx.Model.{ResolvedPos, Replace}
+    from_pos = ResolvedPos.resolve(node, from)
+    to_pos = ResolvedPos.resolve(node, to)
+    Replace.replace(from_pos, to_pos, slice)
+  end
 
   # ── check ──────────────────────────────────────────────────────────────
 

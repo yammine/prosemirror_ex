@@ -674,20 +674,20 @@ defmodule ProsemirrorEx.Model.NodeTest do
       assert resolved.depth == 0
     end
 
-    test "slice raises" do
-      node = doc([])
+    test "slice is implemented" do
+      node = doc([para([txt("hello")])])
 
-      assert_raise RuntimeError, ~r/not yet implemented/, fn ->
-        PmNode.slice(node, 0, 0)
-      end
+      slice = PmNode.slice(node, 0, 0)
+      assert slice.content.size == 0
+      assert slice.open_start == 0
+      assert slice.open_end == 0
     end
 
-    test "replace raises" do
-      node = doc([])
+    test "slice returns content for non-empty range" do
+      node = doc([para([txt("hello")])])
 
-      assert_raise RuntimeError, ~r/not yet implemented/, fn ->
-        PmNode.replace(node, 0, 0, nil)
-      end
+      slice = PmNode.slice(node, 1, 6)
+      assert slice.content.size == 5
     end
 
     test "from_json raises on nil input" do
