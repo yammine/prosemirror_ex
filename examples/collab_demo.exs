@@ -350,21 +350,55 @@ defmodule CollabDemo.EditorLive do
       </div>
     </div>
 
+    <!--
+      Force all packages to share the same prosemirror-* instances via importmap.
+      Without this, each esm.sh import bundles its own copy of prosemirror-state,
+      causing the collab plugin's PluginKey to be invisible to sendableSteps().
+    -->
+    <script type="importmap">
+    {
+      "imports": {
+        "prosemirror-state": "https://esm.sh/prosemirror-state@1.4.3",
+        "prosemirror-model": "https://esm.sh/prosemirror-model@1.25.1",
+        "prosemirror-transform": "https://esm.sh/prosemirror-transform@1.10.4",
+        "prosemirror-view": "https://esm.sh/prosemirror-view@1.38.1",
+        "prosemirror-keymap": "https://esm.sh/prosemirror-keymap@1.2.2",
+        "prosemirror-commands": "https://esm.sh/prosemirror-commands@1.6.2",
+        "prosemirror-schema-list": "https://esm.sh/prosemirror-schema-list@1.5.1",
+        "prosemirror-history": "https://esm.sh/prosemirror-history@1.4.1",
+        "prosemirror-dropcursor": "https://esm.sh/prosemirror-dropcursor@1.8.2",
+        "prosemirror-gapcursor": "https://esm.sh/prosemirror-gapcursor@1.3.2",
+        "prosemirror-inputrules": "https://esm.sh/prosemirror-inputrules@1.4.0",
+        "prosemirror-collab": "https://esm.sh/prosemirror-collab@1.3.1",
+        "@tiptap/pm/state": "https://esm.sh/@tiptap/pm@2.11.5/state",
+        "@tiptap/pm/model": "https://esm.sh/@tiptap/pm@2.11.5/model",
+        "@tiptap/pm/transform": "https://esm.sh/@tiptap/pm@2.11.5/transform",
+        "@tiptap/pm/view": "https://esm.sh/@tiptap/pm@2.11.5/view",
+        "@tiptap/pm/commands": "https://esm.sh/@tiptap/pm@2.11.5/commands",
+        "@tiptap/pm/keymap": "https://esm.sh/@tiptap/pm@2.11.5/keymap",
+        "@tiptap/pm/schema-list": "https://esm.sh/@tiptap/pm@2.11.5/schema-list",
+        "@tiptap/pm/history": "https://esm.sh/@tiptap/pm@2.11.5/history",
+        "@tiptap/pm/dropcursor": "https://esm.sh/@tiptap/pm@2.11.5/dropcursor",
+        "@tiptap/pm/gapcursor": "https://esm.sh/@tiptap/pm@2.11.5/gapcursor",
+        "@tiptap/pm/inputrules": "https://esm.sh/@tiptap/pm@2.11.5/inputrules",
+        "@tiptap/pm/collab": "https://esm.sh/@tiptap/pm@2.11.5/collab",
+        "@tiptap/core": "https://esm.sh/@tiptap/core@2.11.5",
+        "@tiptap/starter-kit": "https://esm.sh/@tiptap/starter-kit@2.11.5",
+        "orderedmap": "https://esm.sh/orderedmap@2.1.1",
+        "w3c-keyname": "https://esm.sh/w3c-keyname@2.2.8",
+        "rope-sequence": "https://esm.sh/rope-sequence@1.3.4",
+        "crelt": "https://esm.sh/crelt@1.0.6"
+      }
+    }
+    </script>
     <script type="module">
-      // Use a single CDN bundle URL that shares all prosemirror-* internals.
-      // The ?bundle flag tells esm.sh to inline all deps so there is exactly
-      // one copy of prosemirror-state, avoiding the duplicate-PluginKey bug.
-      const tiptap = await import('https://esm.sh/@tiptap/core@2.11.5?bundle')
-      const starterKit = await import('https://esm.sh/@tiptap/starter-kit@2.11.5?bundle')
-      const pmCollab = await import('https://esm.sh/prosemirror-collab@1.3.1?bundle')
-      const pmTransform = await import('https://esm.sh/prosemirror-transform@1.10.4?bundle')
-      const phoenix = await import('https://esm.sh/phoenix@1.7.18?bundle')
+      import { Editor } from '@tiptap/core'
+      import StarterKit from '@tiptap/starter-kit'
+      import { collab, sendableSteps, receiveTransaction, getVersion } from 'prosemirror-collab'
+      import { Step } from 'prosemirror-transform'
 
-      const { Editor } = tiptap
-      const StarterKit = starterKit.default
-      const { collab, sendableSteps, receiveTransaction, getVersion } = pmCollab
-      const { Step } = pmTransform
-      const { Socket } = phoenix
+      // Phoenix Socket loaded separately (no prosemirror deps)
+      const { Socket } = await import('https://esm.sh/phoenix@1.7.18?bundle')
 
       function createEditor(elementId, toolbarId, statusId, clientID) {
         const statusEl = document.getElementById(statusId)
