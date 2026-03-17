@@ -12,6 +12,8 @@ defmodule ProsemirrorEx.Model.Slice do
 
   defstruct [:content, :open_start, :open_end]
 
+  @type t :: %__MODULE__{}
+
   @doc "Create a new slice."
   def new(%Fragment{} = content, open_start, open_end) do
     %__MODULE__{content: content, open_start: open_start, open_end: open_end}

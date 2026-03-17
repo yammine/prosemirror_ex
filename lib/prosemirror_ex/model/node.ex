@@ -16,6 +16,8 @@ defmodule ProsemirrorEx.Model.Node do
 
   defstruct [:type, :attrs, :content, :marks, :text]
 
+  @type t :: %__MODULE__{}
+
   # ── Size ──────────────────────────────────────────────────────────────
 
   @doc "The size of this node as counted by the indexing scheme. For text nodes this is the text length, for leaf nodes it is 1, and for non-leaf nodes it is the content size + 2 (for the open and close tokens)."
