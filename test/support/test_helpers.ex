@@ -23,15 +23,23 @@ defmodule ProsemirrorEx.TestHelpers do
       "nodes" => [
         {"doc", %{"content" => "block+"}},
         {"paragraph", %{"content" => "inline*", "group" => "block"}},
-        {"blockquote", %{"content" => "block+", "group" => "block"}},
+        {"blockquote", %{"content" => "block+", "group" => "block", "defining" => true}},
         {"horizontal_rule", %{"group" => "block"}},
         {"heading",
          %{
            "content" => "inline*",
            "group" => "block",
-           "attrs" => %{"level" => %{"default" => 1}}
+           "attrs" => %{"level" => %{"default" => 1}},
+           "defining" => true
          }},
-        {"code_block", %{"content" => "text*", "group" => "block", "code" => true}},
+        {"code_block",
+         %{
+           "content" => "text*",
+           "group" => "block",
+           "code" => true,
+           "marks" => "",
+           "defining" => true
+         }},
         {"text", %{"group" => "inline"}},
         {"image",
          %{
@@ -51,7 +59,7 @@ defmodule ProsemirrorEx.TestHelpers do
            "attrs" => %{"order" => %{"default" => 1}}
          }},
         {"bullet_list", %{"content" => "list_item+", "group" => "block"}},
-        {"list_item", %{"content" => "paragraph block*"}}
+        {"list_item", %{"content" => "paragraph block*", "defining" => true}}
       ],
       "marks" => [
         {"link",

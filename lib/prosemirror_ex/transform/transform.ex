@@ -143,4 +143,60 @@ defmodule ProsemirrorEx.Transform.Transform do
   def clear_incompatible(tr, pos, parent_type, match \\ nil, clear_newlines \\ true) do
     ProsemirrorEx.Transform.Mark.clear_incompatible(tr, pos, parent_type, match, clear_newlines)
   end
+
+  # ── Replace helper delegates ──────────────────────────────────────
+
+  @doc "Replace a range of the document with a slice."
+  def replace(tr, from, to \\ nil, slice \\ nil) do
+    to = to || from
+    slice = slice || ProsemirrorEx.Model.Slice.empty()
+    step_val = ProsemirrorEx.Transform.Replace.replace_step(tr.doc, from, to, slice)
+    if step_val, do: step(tr, step_val), else: tr
+  end
+
+  @doc "Replace a range of the document with a node or list of nodes."
+  def replace_with(tr, from, to, content) do
+    replace(
+      tr,
+      from,
+      to,
+      ProsemirrorEx.Model.Slice.new(
+        ProsemirrorEx.Model.Fragment.from(content),
+        0,
+        0
+      )
+    )
+  end
+
+  @doc "Delete content between `from` and `to`."
+  def delete(tr, from, to), do: replace(tr, from, to)
+
+  @doc "Insert content at `pos`."
+  def insert(tr, pos, content) do
+    replace(
+      tr,
+      pos,
+      pos,
+      ProsemirrorEx.Model.Slice.new(
+        ProsemirrorEx.Model.Fragment.from(content),
+        0,
+        0
+      )
+    )
+  end
+
+  @doc "WYSIWYG-aware replace across a range."
+  def replace_range(tr, from, to, slice) do
+    ProsemirrorEx.Transform.Replace.replace_range(tr, from, to, slice)
+  end
+
+  @doc "WYSIWYG-aware replace with a single node."
+  def replace_range_with(tr, from, to, node) do
+    ProsemirrorEx.Transform.Replace.replace_range_with(tr, from, to, node)
+  end
+
+  @doc "Smart delete that expands to cover parent nodes when appropriate."
+  def delete_range(tr, from, to) do
+    ProsemirrorEx.Transform.Replace.delete_range(tr, from, to)
+  end
 end
