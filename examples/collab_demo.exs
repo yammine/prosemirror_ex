@@ -339,12 +339,17 @@ defmodule CollabDemo.EditorLive do
       </div>
     </div>
 
+    <!-- Suppress LiveView's default JS (we don't need it) -->
+    <script>window.liveSocket = {disconnect(){}, getSocket(){return {conn(){}}}};</script>
+
     <script type="module">
-      import { Editor } from 'https://esm.sh/@tiptap/core@2.11.5'
-      import StarterKit from 'https://esm.sh/@tiptap/starter-kit@2.11.5'
-      import { collab, sendableSteps, receiveTransaction, getVersion } from 'https://esm.sh/prosemirror-collab@1.3.1'
-      import { Step } from 'https://esm.sh/prosemirror-transform@1.10.4'
-      import { Socket } from 'https://esm.sh/phoenix@1.8.5/assets/js/phoenix/index.js?bundle'
+      // Pin all prosemirror packages to same versions to avoid duplicate instances
+      const PM_DEPS = 'prosemirror-state@1.4.3,prosemirror-model@1.25.1,prosemirror-transform@1.10.4,prosemirror-view@1.38.1'
+      const { Editor } = await import(`https://esm.sh/@tiptap/core@2.11.5?deps=${PM_DEPS}`)
+      const { default: StarterKit } = await import(`https://esm.sh/@tiptap/starter-kit@2.11.5?deps=${PM_DEPS}`)
+      const { collab, sendableSteps, receiveTransaction, getVersion } = await import(`https://esm.sh/prosemirror-collab@1.3.1?deps=${PM_DEPS}`)
+      const { Step } = await import(`https://esm.sh/prosemirror-transform@1.10.4`)
+      const { Socket } = await import('https://esm.sh/phoenix@1.7.18?bundle')
 
       function createEditor(elementId, toolbarId, statusId, clientID) {
         const statusEl = document.getElementById(statusId)
