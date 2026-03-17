@@ -923,8 +923,7 @@ defmodule ProsemirrorEx.Model.SchemaTest do
         Schema.new(%{
           "nodes" => [
             {"doc", %{"content" => "block+"}},
-            {"paragraph",
-             %{"content" => "inline*", "group" => "block", "marks" => "em"}},
+            {"paragraph", %{"content" => "inline*", "group" => "block", "marks" => "em"}},
             {"text", %{"group" => "inline"}}
           ],
           "marks" => [
