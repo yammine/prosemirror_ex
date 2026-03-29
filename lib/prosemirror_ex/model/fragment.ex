@@ -358,6 +358,66 @@ defmodule ProsemirrorEx.Model.Fragment do
   end
 
   @doc """
+  Like `nodes_between/6` but threads an accumulator through each callback.
+
+  `f` receives `(node, start_pos, parent, index, acc)` and returns either:
+  - `acc` — descend into children with updated accumulator
+  - `{:skip, acc}` — skip children, continue with updated accumulator
+  """
+  def fold_nodes_between(
+        %__MODULE__{content: content},
+        from,
+        to,
+        f,
+        acc,
+        node_start \\ 0,
+        parent \\ nil
+      ) do
+    do_fold_nodes_between(content, from, to, f, acc, node_start, parent, 0, 0)
+  end
+
+  defp do_fold_nodes_between([], _from, _to, _f, acc, _node_start, _parent, _i, _pos), do: acc
+
+  defp do_fold_nodes_between(_children, _from, to, _f, acc, _node_start, _parent, _i, pos)
+       when pos >= to,
+       do: acc
+
+  defp do_fold_nodes_between([child | rest], from, to, f, acc, node_start, parent, i, pos) do
+    child_end = pos + PmNode.node_size(child)
+
+    acc =
+      if child_end > from do
+        result = f.(child, node_start + pos, parent, i, acc)
+
+        case result do
+          {:skip, acc} ->
+            acc
+
+          acc ->
+            if child.content != nil and child.content.size > 0 do
+              start = pos + 1
+
+              fold_nodes_between(
+                child.content,
+                max(0, from - start),
+                min(child.content.size, to - start),
+                f,
+                acc,
+                node_start + start,
+                child
+              )
+            else
+              acc
+            end
+        end
+      else
+        acc
+      end
+
+    do_fold_nodes_between(rest, from, to, f, acc, node_start, parent, i + 1, child_end)
+  end
+
+  @doc """
   Extract the text between `from` and `to`. When `block_separator` is given,
   it will be inserted between textblocks. When `leaf_text` is given, it will
   be used to represent non-text leaf nodes (string or function).

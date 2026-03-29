@@ -172,6 +172,18 @@ defmodule ProsemirrorEx.Model.Node do
     nodes_between(node, 0, (node.content || Fragment.empty()).size, f)
   end
 
+  @doc """
+  Fold over all descendant nodes, threading an accumulator.
+
+  `f` receives `(node, pos, parent, index, acc)` and returns either:
+  - `acc` — descend into children with updated accumulator
+  - `{:skip, acc}` — skip children, continue with updated accumulator
+  """
+  def fold_descendants(%__MODULE__{} = node, acc, f) do
+    content = node.content || Fragment.empty()
+    Fragment.fold_nodes_between(content, 0, content.size, f, acc, 0, node)
+  end
+
   # ── Text content ─────────────────────────────────────────────────────
 
   @doc "Get the text content of this node."
