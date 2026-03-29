@@ -641,6 +641,100 @@ defmodule ProsemirrorEx.Model.NodeTest do
     end
   end
 
+  # ── fold_descendants ─────────────────────────────────────────────────
+
+  describe "fold_descendants" do
+    test "flat document collects all node names" do
+      node = doc([para([txt("foo")]), para([txt("bar")])])
+
+      names =
+        PmNode.fold_descendants(node, [], fn child, _pos, _parent, _index, acc ->
+          [child.type.name | acc]
+        end)
+
+      assert Enum.reverse(names) == ["paragraph", "text", "paragraph", "text"]
+    end
+
+    test "provides correct positions" do
+      node = doc([para([txt("foo")]), para([txt("bar")])])
+
+      positions =
+        PmNode.fold_descendants(node, [], fn child, pos, _parent, _index, acc ->
+          [{child.type.name, pos} | acc]
+        end)
+
+      # para at 0, text "foo" at 1, para at 5, text "bar" at 6
+      assert Enum.reverse(positions) == [
+               {"paragraph", 0},
+               {"text", 1},
+               {"paragraph", 5},
+               {"text", 6}
+             ]
+    end
+
+    test "nested structure — list items inside list" do
+      node = doc([ul_node([li_node([para([txt("a")])]), li_node([para([txt("b")])])])])
+
+      names =
+        PmNode.fold_descendants(node, [], fn child, _pos, _parent, _index, acc ->
+          [child.type.name | acc]
+        end)
+
+      assert Enum.reverse(names) == [
+               "bullet_list",
+               "list_item",
+               "paragraph",
+               "text",
+               "list_item",
+               "paragraph",
+               "text"
+             ]
+    end
+
+    test "accumulates mark data from nodes" do
+      node =
+        doc([
+          para([txt("plain"), txt("bold", [strong_mark()]), txt("italic", [em_mark()])])
+        ])
+
+      marks =
+        PmNode.fold_descendants(node, [], fn child, _pos, _parent, _index, acc ->
+          case child.marks do
+            [_ | _] = m -> acc ++ Enum.map(m, & &1.type.name)
+            _ -> acc
+          end
+        end)
+
+      assert marks == ["strong", "em"]
+    end
+
+    test "{:skip, acc} skips subtree children" do
+      node = doc([para([txt("yes")]), blockquote_node([para([txt("no")])])])
+
+      names =
+        PmNode.fold_descendants(node, [], fn child, _pos, _parent, _index, acc ->
+          if child.type.name == "blockquote" do
+            {:skip, ["blockquote(skipped)" | acc]}
+          else
+            [child.type.name | acc]
+          end
+        end)
+
+      assert Enum.reverse(names) == ["paragraph", "text", "blockquote(skipped)"]
+    end
+
+    test "empty document returns initial accumulator" do
+      node = doc([])
+
+      result =
+        PmNode.fold_descendants(node, :untouched, fn _child, _pos, _parent, _index, acc ->
+          acc
+        end)
+
+      assert result == :untouched
+    end
+  end
+
   # ── node_at ──────────────────────────────────────────────────────────
 
   describe "node_at" do
