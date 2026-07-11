@@ -168,3 +168,16 @@ new_pos = ProsemirrorEx.Transform.Mapping.map(mapping, old_pos)
 - **Step registry via `:persistent_term`** — global, cross-process, registered on module load via `@on_load`
 - **Transform extensibility** — functions pattern match on map keys (`%{doc: _, steps: _, ...}`) not `%Transform{}`, so `Transaction` can extend it
 - **Mappable as protocol** — both StepMap and Mapping implement it; third-party types can too
+
+## Cursor Cloud specific instructions
+
+Toolchain is preinstalled in the VM snapshot: Erlang/OTP 27 + Elixir 1.18 (on PATH via `/usr/local/bin`). The startup update script runs `mix deps.get` for the library and `mix deps.get` + `mix assets.setup` for `examples/collab_demo`. Hex/Rebar and asset deps (esbuild binary, npm packages) persist across sessions, so you normally don't reinstall anything manually.
+
+### Library (`prosemirror_ex`, repo root)
+Standard commands (see `## Testing` above and `.github/workflows/ci.yml`): `mix compile --warnings-as-errors`, `mix format --check-formatted` (lint), `mix test` (1144 tests). No database or external services are needed.
+
+### Example app (`examples/collab_demo`)
+Runnable Phoenix collaborative-editing demo (real-time sync via Phoenix Channels + `ProsemirrorEx.Authority`). Run from `examples/collab_demo` with `mix phx.server`; it listens on http://localhost:4002 (see `examples/collab_demo/README.md`). Notes:
+- In dev the `esbuild` watcher rebuilds `assets/js/app.js` automatically on server start, so a manual `mix assets.build` is not required to run the server. `mix assets.setup` (run by the update script) only fetches the esbuild binary + npm deps.
+- Document state is held in memory by `CollabDemo.DocServer` — there is no persistence, so restarting the server resets the shared document.
+- The compile warnings `no route path ... matches "/assets/js/app.js"` are benign; static assets are served correctly (HTTP 200).
