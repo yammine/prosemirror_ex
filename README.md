@@ -67,11 +67,14 @@ restored = Node.from_json(schema, json)
 
 ## Authority Server (Collaborative Editing)
 
+Implements the central authority from the [ProseMirror collab guide](https://prosemirror.net/docs/guides/collab/): version tracking, step acceptance, and catch-up history. Built on `Model` + `Transform` only — client packages (`prosemirror-collab`, `prosemirror-state`, `prosemirror-view`, etc.) stay in the browser.
+
 ```elixir
 alias ProsemirrorEx.Authority
 
 # Start an authority with a schema and initial document
-auth = Authority.new(schema, doc)
+# Optionally bound step history (official demo uses MAX_STEP_HISTORY)
+auth = Authority.new(schema, doc, max_history: 10_000)
 
 # Receive steps from clients
 {:ok, auth} = Authority.receive_steps(auth, "client-1", 0, steps)
@@ -81,9 +84,12 @@ auth = Authority.new(schema, doc)
 
 # Get steps for catch-up
 {:ok, missed_steps, client_ids} = Authority.steps_since(auth, 0)
+
+# If history was trimmed past the client's version:
+# {:error, :history_unavailable} — reload via Authority.doc/1
 ```
 
-A GenServer wrapper is also available at `ProsemirrorEx.Authority.Server` for process-based state management.
+`ProsemirrorEx.Authority.Server` wraps this in a GenServer with JSON boundaries and `subscribe/1` notifications (`{:authority_update, payload}`), the Elixir equivalent of the guide's `onNewSteps` callbacks.
 
 ## License
 

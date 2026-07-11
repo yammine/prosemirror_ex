@@ -161,6 +161,17 @@ mapping = tr.mapping
 new_pos = ProsemirrorEx.Transform.Mapping.map(mapping, old_pos)
 ```
 
+## Authority (`ProsemirrorEx.Authority`)
+
+Collaborative editing central authority (server-side counterpart to `prosemirror-collab` clients).
+
+| Module | Purpose |
+|--------|---------|
+| `Authority` | Pure functional core: version, receive_steps, steps_since, optional `max_history` |
+| `Authority.Server` | GenServer + JSON boundary + `subscribe` (`onNewSteps` equivalent) |
+
+**Suite note:** An authority only needs `prosemirror-model` + `prosemirror-transform` (ported). Packages like `prosemirror-state`, `prosemirror-view`, `prosemirror-collab`, commands/keymap/history are client-side and intentionally not ported.
+
 ## Design Decisions
 
 - **TextNode as Node with non-nil `:text`** — no separate struct, pattern match on `:text` field
@@ -168,3 +179,4 @@ new_pos = ProsemirrorEx.Transform.Mapping.map(mapping, old_pos)
 - **Step registry via `:persistent_term`** — global, cross-process, registered on module load via `@on_load`
 - **Transform extensibility** — functions pattern match on map keys (`%{doc: _, steps: _, ...}`) not `%Transform{}`, so `Transaction` can extend it
 - **Mappable as protocol** — both StepMap and Mapping implement it; third-party types can too
+- **Authority history trim** — `max_history` mirrors the official collab demo; trimmed versions return `:history_unavailable`

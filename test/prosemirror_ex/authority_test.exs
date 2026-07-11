@@ -190,4 +190,66 @@ defmodule ProsemirrorEx.AuthorityTest do
       assert Authority.version(auth) == 0
     end
   end
+
+  describe "empty step batches" do
+    test "accepting an empty batch is a no-op" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      auth = Authority.new(schema, doc_node)
+
+      assert {:ok, ^auth} = Authority.receive_steps(auth, "client1", 0, [])
+    end
+  end
+
+  describe "max_history trimming" do
+    test "trims retained steps while keeping version monotonic" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      auth = Authority.new(schema, doc_node, max_history: 2)
+
+      {:ok, auth} = Authority.receive_steps(auth, "c1", 0, [make_insert_step(schema, " a", 6)])
+      {:ok, auth} = Authority.receive_steps(auth, "c2", 1, [make_insert_step(schema, " b", 8)])
+      {:ok, auth} = Authority.receive_steps(auth, "c3", 2, [make_insert_step(schema, " c", 10)])
+
+      assert Authority.version(auth) == 3
+      assert length(auth.steps) == 2
+      assert Authority.first_version(auth) == 1
+      assert auth.step_client_ids == ["c2", "c3"]
+    end
+
+    test "steps_since returns :history_unavailable for trimmed versions" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      auth = Authority.new(schema, doc_node, max_history: 1)
+
+      {:ok, auth} = Authority.receive_steps(auth, "c1", 0, [make_insert_step(schema, " a", 6)])
+      {:ok, auth} = Authority.receive_steps(auth, "c2", 1, [make_insert_step(schema, " b", 8)])
+
+      assert {:error, :history_unavailable} = Authority.steps_since(auth, 0)
+      assert {:ok, steps, client_ids} = Authority.steps_since(auth, 1)
+      assert length(steps) == 1
+      assert client_ids == ["c2"]
+    end
+
+    test "steps_since still works for versions inside the retained window" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      auth = Authority.new(schema, doc_node, max_history: 3)
+
+      {:ok, auth} = Authority.receive_steps(auth, "c1", 0, [make_insert_step(schema, " a", 6)])
+      {:ok, auth} = Authority.receive_steps(auth, "c2", 1, [make_insert_step(schema, " b", 8)])
+
+      assert {:ok, steps, _} = Authority.steps_since(auth, 0)
+      assert length(steps) == 2
+      assert Authority.first_version(auth) == 0
+    end
+
+    test "rejects invalid max_history" do
+      schema = make_schema()
+
+      assert_raise ArgumentError, fn ->
+        Authority.new(schema, nil, max_history: 0)
+      end
+    end
+  end
 end
