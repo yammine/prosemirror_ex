@@ -326,4 +326,101 @@ defmodule ProsemirrorEx.Authority.ServerTest do
                Server.receive_steps(server, "client1", 0, [%{"invalid" => true}])
     end
   end
+
+  describe "get_version" do
+    test "returns the current version" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      server = start_server(schema: schema, doc: doc_node)
+
+      assert Server.get_version(server) == 0
+
+      step_json = make_insert_step_json(schema, " world", 6)
+      {:ok, 1} = Server.receive_steps(server, "clientA", 0, [step_json])
+      assert Server.get_version(server) == 1
+    end
+  end
+
+  describe "subscribe" do
+    test "notifies subscribers when steps are accepted" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      server = start_server(schema: schema, doc: doc_node)
+
+      assert :ok = Server.subscribe(server)
+
+      step_json = make_insert_step_json(schema, " world", 6)
+      assert {:ok, 1} = Server.receive_steps(server, "clientA", 0, [step_json])
+
+      assert_receive {:authority_update,
+                      %{version: 1, steps: [step], client_ids: ["clientA"]}}
+
+      assert step["stepType"] == "replace"
+    end
+
+    test "does not notify after unsubscribe" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      server = start_server(schema: schema, doc: doc_node)
+
+      :ok = Server.subscribe(server)
+      :ok = Server.unsubscribe(server)
+
+      step_json = make_insert_step_json(schema, " world", 6)
+      assert {:ok, 1} = Server.receive_steps(server, "clientA", 0, [step_json])
+
+      refute_receive {:authority_update, _}, 50
+    end
+
+    test "does not notify on version mismatch" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      server = start_server(schema: schema, doc: doc_node)
+
+      :ok = Server.subscribe(server)
+
+      step_json = make_insert_step_json(schema, " world", 6)
+      {:ok, 1} = Server.receive_steps(server, "clientA", 0, [step_json])
+      assert_receive {:authority_update, %{version: 1}}
+
+      assert {:error, :version_mismatch} =
+               Server.receive_steps(server, "clientB", 0, [step_json])
+
+      refute_receive {:authority_update, _}, 50
+    end
+
+    test "re-subscribe is idempotent and does not leak monitors" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      server = start_server(schema: schema, doc: doc_node)
+
+      assert :ok = Server.subscribe(server)
+      assert :ok = Server.subscribe(server)
+      assert :ok = Server.subscribe(server)
+
+      step_json = make_insert_step_json(schema, " world", 6)
+      assert {:ok, 1} = Server.receive_steps(server, "clientA", 0, [step_json])
+
+      assert_receive {:authority_update, %{version: 1}}
+      refute_receive {:authority_update, _}, 50
+    end
+  end
+
+  describe "max_history" do
+    test "returns history_unavailable when version was trimmed" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      server = start_server(schema: schema, doc: doc_node, max_history: 1)
+
+      step1 = make_insert_step_json(schema, " a", 6)
+      {:ok, 1} = Server.receive_steps(server, "c1", 0, [step1])
+
+      step2 = make_insert_step_json(schema, " b", 8)
+      {:ok, 2} = Server.receive_steps(server, "c2", 1, [step2])
+
+      assert {:error, :history_unavailable} = Server.steps_since(server, 0)
+      assert {:ok, steps, ["c2"]} = Server.steps_since(server, 1)
+      assert length(steps) == 1
+    end
+  end
 end
