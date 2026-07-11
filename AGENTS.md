@@ -49,10 +49,22 @@ Document transformation via invertible, mappable steps. Each step produces a new
 | `Transform.Structure` | lift, wrap, split, join, setBlockType | Structural document operations |
 | `Transform.Mark` | addMark, removeMark, clearIncompatible | Mark transform helpers |
 
+### ProsemirrorEx.Schema (convenience)
+
+DX helpers for composing common ProseMirror schemas without hand-writing full spec maps.
+
+| Module | Purpose | When to look here |
+|--------|---------|-------------------|
+| `Schema.Basic` | `nodes/0`, `marks/0`, `schema/0` for standard prose nodes | Quick schema setup without lists |
+| `Schema.List` | `add_list_nodes/2-3` to append list specs to a node list | Adding bullet/ordered lists to Basic |
+
 ## File Layout
 
 ```
 lib/prosemirror_ex/
+├── schema/                   # Convenience schema builders
+│   ├── basic.ex              # Basic prose node/mark specs + schema/0
+│   └── list.ex               # add_list_nodes/2-3
 ├── model/                    # Document model (prosemirror-model port)
 │   ├── schema.ex             # Schema construction + factories
 │   ├── node.ex               # Node struct + operations
@@ -129,10 +141,14 @@ Design specs and implementation plans are in `docs/superpowers/specs/` and `docs
 
 ### Create a document and apply transforms
 ```elixir
+alias ProsemirrorEx.Schema.{Basic, List}
 alias ProsemirrorEx.Model.Schema
 alias ProsemirrorEx.Transform.Transform
 
-schema = Schema.new(%{"nodes" => [...], "marks" => [...]})
+schema = Schema.new(%{
+  "nodes" => Basic.nodes() |> List.add_list_nodes("paragraph block*", "block"),
+  "marks" => Basic.marks()
+})
 doc = Schema.node(schema, "doc", nil, [Schema.node(schema, "paragraph", nil, [Schema.text(schema, "hello")])])
 
 tr = Transform.new(doc)

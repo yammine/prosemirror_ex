@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ProsemirrorEx — Schema.Basic + Schema.List</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --paper: #f4f0e8;
+      --paper-deep: #ebe5d9;
+      --ink: #1c1a17;
+      --ink-muted: #5c564c;
+      --ink-faint: #8a8276;
+      --accent: #2d4a3e;
+      --accent-soft: #e3ebe6;
+      --rule: #d4cdc0;
+      --code-bg: #eae6de;
+      --code-border: #cfc7b8;
+      --em: #3d5a4a;
+      --strong: #1c1a17;
+      --blockquote-border: #a89f8f;
+      --serif: "Fraunces", "Georgia", "Times New Roman", serif;
+      --mono: "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html {
+      font-size: 17px;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: var(--sans);
+      color: var(--ink);
+      background-color: var(--paper);
+      background-image:
+        radial-gradient(ellipse 120% 80% at 50% -20%, rgba(255, 252, 245, 0.9) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 40% at 100% 50%, rgba(210, 200, 180, 0.15) 0%, transparent 50%),
+        url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+      line-height: 1.55;
+      min-height: 100vh;
+    }
+
+    .page {
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 3.5rem 1.5rem 5rem;
+    }
+
+    /* ── Hero ── */
+    .hero {
+      min-height: 72vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding-bottom: 2rem;
+    }
+
+    .hero-eyebrow {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      margin-bottom: 1.25rem;
+    }
+
+    .hero-brand {
+      font-family: var(--serif);
+      font-size: clamp(2.8rem, 8vw, 4.2rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.05;
+      color: var(--ink);
+      margin-bottom: 1rem;
+    }
+
+    .hero-headline {
+      font-family: var(--serif);
+      font-size: clamp(1.35rem, 3.5vw, 1.75rem);
+      font-weight: 400;
+      color: var(--ink-muted);
+      line-height: 1.35;
+      max-width: 32ch;
+      margin-bottom: 1.5rem;
+    }
+
+    .hero-lede {
+      font-size: 1rem;
+      color: var(--ink-muted);
+      max-width: 38ch;
+      margin-bottom: 2rem;
+    }
+
+    .cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      color: var(--accent);
+      background: var(--accent-soft);
+      border: 1px solid #b8cfc2;
+      border-radius: 4px;
+      padding: 0.65rem 1rem;
+      text-decoration: none;
+      transition: background 0.15s;
+    }
+
+    .cta:hover { background: #d5e4db; }
+
+    .cta-prompt { color: var(--ink-faint); user-select: none; }
+
+    .scroll-hint {
+      margin-top: auto;
+      padding-top: 3rem;
+      font-size: 0.78rem;
+      color: var(--ink-faint);
+      letter-spacing: 0.04em;
+    }
+
+    /* ── Sections ── */
+    section {
+      margin-top: 4.5rem;
+      padding-top: 2.5rem;
+      border-top: 1px solid var(--rule);
+    }
+
+    .section-label {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      margin-bottom: 0.75rem;
+    }
+
+    h2 {
+      font-family: var(--serif);
+      font-size: 1.65rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin-bottom: 0.75rem;
+    }
+
+    .section-desc {
+      color: var(--ink-muted);
+      font-size: 0.95rem;
+      margin-bottom: 1.75rem;
+      max-width: 42ch;
+    }
+
+    /* ── Code blocks ── */
+    .code-pair {
+      display: grid;
+      gap: 1.25rem;
+    }
+
+    @media (min-width: 640px) {
+      .code-pair { grid-template-columns: 1fr 1fr; }
+    }
+
+    .code-block {
+      border: 1px solid var(--code-border);
+      border-radius: 5px;
+      overflow: hidden;
+      background: var(--code-bg);
+    }
+
+    .code-block-header {
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.5rem 0.85rem;
+      background: var(--paper-deep);
+      border-bottom: 1px solid var(--code-border);
+      color: var(--ink-faint);
+    }
+
+    .code-block-header.after { color: var(--accent); }
+
+    pre {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      line-height: 1.6;
+      padding: 1rem 0.85rem;
+      overflow-x: auto;
+      white-space: pre;
+      color: var(--ink);
+    }
+
+    .kw { color: #6b4c2a; }
+    .fn { color: var(--accent); }
+    .str { color: #5a4a32; }
+    .cmt { color: var(--ink-faint); font-style: italic; }
+    .dim { color: var(--ink-faint); }
+
+    /* ── Document preview ── */
+    .doc-preview {
+      background: #faf8f4;
+      border: 1px solid var(--rule);
+      border-radius: 6px;
+      padding: 2rem 2.25rem 2.25rem;
+      box-shadow: 0 1px 3px rgba(28, 26, 23, 0.04);
+    }
+
+    .doc-preview h1 {
+      font-family: var(--serif);
+      font-size: 1.55rem;
+      font-weight: 700;
+      margin-bottom: 1.1rem;
+      letter-spacing: -0.01em;
+    }
+
+    .doc-preview p {
+      margin-bottom: 1rem;
+      color: var(--ink);
+    }
+
+    .doc-preview em {
+      font-style: italic;
+      color: var(--em);
+    }
+
+    .doc-preview strong {
+      font-weight: 700;
+      color: var(--strong);
+    }
+
+    .doc-preview blockquote {
+      border-left: 3px solid var(--blockquote-border);
+      padding: 0.15rem 0 0.15rem 1.1rem;
+      margin: 1.25rem 0;
+      color: var(--ink-muted);
+      font-style: italic;
+    }
+
+    .doc-preview blockquote p { margin-bottom: 0; }
+
+    .doc-preview ul,
+    .doc-preview ol {
+      margin: 0.75rem 0 1rem 1.4rem;
+      color: var(--ink);
+    }
+
+    .doc-preview li { margin-bottom: 0.35rem; }
+
+    .doc-preview pre.doc-code {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      background: var(--code-bg);
+      border: 1px solid var(--code-border);
+      border-radius: 4px;
+      padding: 0.85rem 1rem;
+      margin: 1.25rem 0;
+      overflow-x: auto;
+      color: var(--ink);
+    }
+
+    .doc-preview hr {
+      border: none;
+      border-top: 1px solid var(--rule);
+      margin: 1.5rem 0 0;
+    }
+
+    .node-tag {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 0.58rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--ink-faint);
+      background: var(--paper-deep);
+      border: 1px solid var(--rule);
+      border-radius: 2px;
+      padding: 0.1rem 0.35rem;
+      vertical-align: middle;
+      margin-left: 0.4rem;
+      font-weight: 400;
+      font-style: normal;
+    }
+
+    /* ── Wire JSON ── */
+    details.json-panel {
+      border: 1px solid var(--code-border);
+      border-radius: 5px;
+      background: var(--code-bg);
+      overflow: hidden;
+    }
+
+    details.json-panel summary {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      padding: 0.75rem 1rem;
+      cursor: pointer;
+      background: var(--paper-deep);
+      border-bottom: 1px solid transparent;
+      color: var(--ink-muted);
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      user-select: none;
+    }
+
+    details.json-panel summary::-webkit-details-marker { display: none; }
+
+    details.json-panel summary::before {
+      content: "▸";
+      font-size: 0.7rem;
+      color: var(--ink-faint);
+      transition: transform 0.15s;
+    }
+
+    details.json-panel[open] summary {
+      border-bottom-color: var(--code-border);
+    }
+
+    details.json-panel[open] summary::before {
+      transform: rotate(90deg);
+    }
+
+    .json-scroll {
+      max-height: 22rem;
+      overflow: auto;
+    }
+
+    .json-scroll pre {
+      font-size: 0.68rem;
+      line-height: 1.55;
+      padding: 1rem;
+    }
+
+    .json-key { color: #6b4c2a; }
+    .json-str { color: var(--accent); }
+    .json-type { color: #7a5c3a; }
+
+    footer {
+      margin-top: 4rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--rule);
+      font-size: 0.78rem;
+      color: var(--ink-faint);
+      font-family: var(--mono);
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+
+    <header class="hero">
+      <p class="hero-eyebrow">Elixir · ProseMirror wire format</p>
+      <h1 class="hero-brand">ProsemirrorEx</h1>
+      <p class="hero-headline">Schema.Basic + Schema.List</p>
+      <p class="hero-lede">Convenience modules that ship prosemirror-schema-basic and prosemirror-schema-list as composable Elixir specs — no hand-written node maps.</p>
+      <a class="cta" href="#" onclick="return false;">
+        <span class="cta-prompt">$</span>
+        <span>mix run examples/schema_demo.exs</span>
+      </a>
+      <p class="scroll-hint">↓ scroll for before / after, sample doc, wire JSON</p>
+    </header>
+
+    <section id="before-after">
+      <p class="section-label">Schema composition</p>
+      <h2>Before &amp; after</h2>
+      <p class="section-desc">Twelve node types and four marks, wired by hand — or composed in one expression.</p>
+
+      <div class="code-pair">
+        <div class="code-block">
+          <div class="code-block-header">Before — verbose Schema.new/1</div>
+          <pre><span class="kw">Schema</span>.<span class="fn">new</span>(%{
+  <span class="str">"nodes"</span> => [
+    {<span class="str">"doc"</span>, %{<span class="str">"content"</span> => <span class="str">"block+"</span>}},
+    {<span class="str">"paragraph"</span>, %{<span class="str">"content"</span> => <span class="str">"inline*"</span>, <span class="str">"group"</span> => <span class="str">"block"</span>}},
+    {<span class="str">"blockquote"</span>, %{<span class="str">"content"</span> => <span class="str">"block+"</span>, <span class="dim">…</span>}},
+    {<span class="str">"horizontal_rule"</span>, %{<span class="str">"group"</span> => <span class="str">"block"</span>}},
+    {<span class="str">"heading"</span>, %{<span class="str">"content"</span> => <span class="str">"inline*"</span>, <span class="dim">…</span>}},
+    {<span class="str">"code_block"</span>, %{<span class="str">"content"</span> => <span class="str">"text*"</span>, <span class="dim">…</span>}},
+    {<span class="str">"text"</span>, %{<span class="str">"group"</span> => <span class="str">"inline"</span>}},
+    {<span class="str">"image"</span>, %{<span class="str">"inline"</span> => <span class="kw">true</span>, <span class="dim">…</span>}},
+    {<span class="str">"hard_break"</span>, %{<span class="str">"inline"</span> => <span class="kw">true</span>, <span class="dim">…</span>}},
+    {<span class="str">"bullet_list"</span>, %{<span class="str">"content"</span> => <span class="str">"list_item+"</span>, <span class="dim">…</span>}},
+    {<span class="str">"ordered_list"</span>, %{<span class="str">"content"</span> => <span class="str">"list_item+"</span>, <span class="dim">…</span>}},
+    {<span class="str">"list_item"</span>, %{<span class="str">"content"</span> => <span class="str">"paragraph block*"</span>, <span class="dim">…</span>}}
+  ],
+  <span class="str">"marks"</span> => [
+    {<span class="str">"link"</span>, %{<span class="dim">…</span>}},
+    {<span class="str">"em"</span>, %{}},
+    {<span class="str">"strong"</span>, %{}},
+    {<span class="str">"code"</span>, %{<span class="str">"code"</span> => <span class="kw">true</span>}}
+  ]
+})</pre>
+        </div>
+
+        <div class="code-block">
+          <div class="code-block-header after">After — Basic + List</div>
+          <pre><span class="kw">alias</span> ProsemirrorEx.Schema.{<span class="fn">Basic</span>, <span class="fn">List</span>}
+<span class="kw">alias</span> ProsemirrorEx.Model.<span class="fn">Schema</span>
+
+schema =
+  <span class="fn">Schema</span>.<span class="fn">new</span>(%{
+    <span class="str">"nodes"</span> =>
+      <span class="fn">Basic</span>.<span class="fn">nodes</span>()
+      |&gt; <span class="fn">List</span>.<span class="fn">add_list_nodes</span>(
+           <span class="str">"paragraph block*"</span>,
+           <span class="str">"block"</span>
+         ),
+    <span class="str">"marks"</span> => <span class="fn">Basic</span>.<span class="fn">marks</span>()
+  })
+
+<span class="cmt"># Without lists:</span>
+<span class="cmt"># Basic.schema()</span></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="sample-doc">
+      <p class="section-label">Document model</p>
+      <h2>Sample document</h2>
+      <p class="section-desc">Built with the composed schema — every block type from Basic plus lists, rendered as a single prose composition.</p>
+
+      <article class="doc-preview">
+        <h1>Schema.Basic + Schema.List Demo <span class="node-tag">heading</span></h1>
+
+        <p>
+          Plain text, <em>emphasized<span class="node-tag">em</span></em>, and <strong>bold<span class="node-tag">strong</span></strong>.
+          <span class="node-tag">paragraph</span>
+        </p>
+
+        <blockquote>
+          <p>A blockquote with a nested paragraph. <span class="node-tag">blockquote</span></p>
+        </blockquote>
+
+        <ul>
+          <li>First bullet</li>
+          <li>Second bullet
+            <span class="node-tag">bullet_list</span>
+          </li>
+        </ul>
+
+        <ol>
+          <li>Step one</li>
+          <li>Step two
+            <span class="node-tag">ordered_list</span>
+          </li>
+        </ol>
+
+        <pre class="doc-code">def hello, do: :world<span class="node-tag">code_block</span></pre>
+
+        <hr>
+        <span class="node-tag" style="margin-left:0">horizontal_rule</span>
+      </article>
+    </section>
+
+    <section id="wire-json">
+      <p class="section-label">Wire format</p>
+      <h2>ProseMirror JSON</h2>
+      <p class="section-desc">Byte-for-byte compatible with the JS ProseMirror ecosystem — <code style="font-family:var(--mono);font-size:0.85em">Node.to_json/1</code> output from the demo script.</p>
+
+      <details class="json-panel" open>
+        <summary>Expand wire JSON</summary>
+        <div class="json-scroll">
+          <pre>{
+  <span class="json-key">"content"</span>: [
+    {
+      <span class="json-key">"attrs"</span>: { <span class="json-key">"level"</span>: <span class="json-type">1</span> },
+      <span class="json-key">"content"</span>: [
+        {
+          <span class="json-key">"text"</span>: <span class="json-str">"Schema.Basic + Schema.List Demo"</span>,
+          <span class="json-key">"type"</span>: <span class="json-str">"text"</span>
+        }
+      ],
+      <span class="json-key">"type"</span>: <span class="json-str">"heading"</span>
+    },
+    {
+      <span class="json-key">"content"</span>: [
+        { <span class="json-key">"text"</span>: <span class="json-str">"Plain text, "</span>, <span class="json-key">"type"</span>: <span class="json-str">"text"</span> },
+        {
+          <span class="json-key">"marks"</span>: [{ <span class="json-key">"type"</span>: <span class="json-str">"em"</span> }],
+          <span class="json-key">"text"</span>: <span class="json-str">"emphasized"</span>,
+          <span class="json-key">"type"</span>: <span class="json-str">"text"</span>
+        },
+        { <span class="json-key">"text"</span>: <span class="json-str">", and "</span>, <span class="json-key">"type"</span>: <span class="json-str">"text"</span> },
+        {
+          <span class="json-key">"marks"</span>: [{ <span class="json-key">"type"</span>: <span class="json-str">"strong"</span> }],
+          <span class="json-key">"text"</span>: <span class="json-str">"bold"</span>,
+          <span class="json-key">"type"</span>: <span class="json-str">"text"</span>
+        },
+        { <span class="json-key">"text"</span>: <span class="json-str">"."</span>, <span class="json-key">"type"</span>: <span class="json-str">"text"</span> }
+      ],
+      <span class="json-key">"type"</span>: <span class="json-str">"paragraph"</span>
+    },
+    {
+      <span class="json-key">"content"</span>: [
+        {
+          <span class="json-key">"content"</span>: [
+            {
+              <span class="json-key">"text"</span>: <span class="json-str">"A blockquote with a nested paragraph."</span>,
+              <span class="json-key">"type"</span>: <span class="json-str">"text"</span>
+            }
+          ],
+          <span class="json-key">"type"</span>: <span class="json-str">"paragraph"</span>
+        }
+      ],
+      <span class="json-key">"type"</span>: <span class="json-str">"blockquote"</span>
+    },
+    {
+      <span class="json-key">"content"</span>: [
+        {
+          <span class="json-key">"content"</span>: [
+            {
+              <span class="json-key">"content"</span>: [
+                { <span class="json-key">"text"</span>: <span class="json-str">"First bullet"</span>, <span class="json-key">"type"</span>: <span class="json-str">"text"</span> }
+              ],
+              <span class="json-key">"type"</span>: <span class="json-str">"paragraph"</span>
+            }
+          ],
+          <span class="json-key">"type"</span>: <span class="json-str">"list_item"</span>
+        },
+        {
+          <span class="json-key">"content"</span>: [
+            {
+              <span class="json-key">"content"</span>: [
+                { <span class="json-key">"text"</span>: <span class="json-str">"Second bullet"</span>, <span class="json-key">"type"</span>: <span class="json-str">"text"</span> }
+              ],
+              <span class="json-key">"type"</span>: <span class="json-str">"paragraph"</span>
+            }
+          ],
+          <span class="json-key">"type"</span>: <span class="json-str">"list_item"</span>
+        }
+      ],
+      <span class="json-key">"type"</span>: <span class="json-str">"bullet_list"</span>
+    },
+    {
+      <span class="json-key">"attrs"</span>: { <span class="json-key">"order"</span>: <span class="json-type">1</span> },
+      <span class="json-key">"content"</span>: [
+        {
+          <span class="json-key">"content"</span>: [
+            {
+              <span class="json-key">"content"</span>: [
+                { <span class="json-key">"text"</span>: <span class="json-str">"Step one"</span>, <span class="json-key">"type"</span>: <span class="json-str">"text"</span> }
+              ],
+              <span class="json-key">"type"</span>: <span class="json-str">"paragraph"</span>
+            }
+          ],
+          <span class="json-key">"type"</span>: <span class="json-str">"list_item"</span>
+        },
+        {
+          <span class="json-key">"content"</span>: [
+            {
+              <span class="json-key">"content"</span>: [
+                { <span class="json-key">"text"</span>: <span class="json-str">"Step two"</span>, <span class="json-key">"type"</span>: <span class="json-str">"text"</span> }
+              ],
+              <span class="json-key">"type"</span>: <span class="json-str">"paragraph"</span>
+            }
+          ],
+          <span class="json-key">"type"</span>: <span class="json-str">"list_item"</span>
+        }
+      ],
+      <span class="json-key">"type"</span>: <span class="json-str">"ordered_list"</span>
+    },
+    {
+      <span class="json-key">"content"</span>: [
+        {
+          <span class="json-key">"text"</span>: <span class="json-str">"def hello, do: :world"</span>,
+          <span class="json-key">"type"</span>: <span class="json-str">"text"</span>
+        }
+      ],
+      <span class="json-key">"type"</span>: <span class="json-str">"code_block"</span>
+    },
+    {
+      <span class="json-key">"type"</span>: <span class="json-str">"horizontal_rule"</span>
+    }
+  ],
+  <span class="json-key">"type"</span>: <span class="json-str">"doc"</span>
+}</pre>
+        </div>
+      </details>
+    </section>
+
+    <footer>
+      prosemirror-ex · examples/schema_demo/
+    </footer>
+
+  </div>
+</body>
+</html>
