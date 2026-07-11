@@ -12,6 +12,23 @@ Elixir port of the [ProseMirror](https://prosemirror.net/) document model and tr
 - **Authority Server** (`ProsemirrorEx.Authority`) — collaborative editing server with version tracking and step history
 - **Wire-format compatible** — JSON serialization is identical to the JS libraries
 - **Arbitrary schemas** — define any ProseMirror schema, not just the basic one
+- **Convenience schemas** — `ProsemirrorEx.Schema.Basic` and `ProsemirrorEx.Schema.List` for common prose + list setups
+
+## Convenience schemas
+
+```elixir
+alias ProsemirrorEx.Schema.{Basic, List}
+alias ProsemirrorEx.Model.Schema
+
+schema =
+  Schema.new(%{
+    "nodes" => Basic.nodes() |> List.add_list_nodes("paragraph block*", "block"),
+    "marks" => Basic.marks()
+  })
+# or Basic.schema() without lists
+```
+
+Run the interactive demo: `mix run examples/schema_demo.exs`
 
 ## Installation
 
