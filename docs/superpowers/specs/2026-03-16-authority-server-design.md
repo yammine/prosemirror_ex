@@ -128,6 +128,7 @@ The GenServer handles all JSON conversion at the boundary so callers work with p
 ## Error Handling
 
 - `receive_steps` with wrong version: `{:error, :version_mismatch}` — client should fetch steps_since their version, rebase their pending steps, and retry
+- `receive_steps` with a batch larger than `max_history`: `{:error, :batch_too_large}` — split the batch or raise the limit so the accepted batch always fits in the retained window
 - `receive_steps` with a step that fails to apply: `{:error, :step_failed, message}` — indicates a bug or corrupted step
 - `steps_since` with invalid version: `{:error, :invalid_version}`
 - `steps_since` with trimmed-away version: `{:error, :history_unavailable}` — client should reload full doc via `get_doc`

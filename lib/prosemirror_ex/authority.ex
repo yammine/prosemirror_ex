@@ -45,7 +45,9 @@ defmodule ProsemirrorEx.Authority do
   - `:max_history` — maximum number of steps to retain (default `nil`, unlimited).
     Matches the official ProseMirror collab demo's history window. When exceeded,
     older steps are discarded; clients that are too far behind must reload the
-    full document.
+    full document. A single `receive_steps` batch may not exceed this limit
+    (`{:error, :batch_too_large}`); accepted batches are always retained in full
+    so `steps_since/2` from the pre-batch version remains valid.
   """
   def new(schema, doc \\ nil, opts \\ [])
 
@@ -69,6 +71,9 @@ defmodule ProsemirrorEx.Authority do
   Returns:
   - `{:ok, updated_authority}` on success
   - `{:error, :version_mismatch}` if `client_version != authority.version`
+  - `{:error, :batch_too_large}` if `max_history` is set and the batch is larger
+    (a batch must fit in the history window so `steps_since(client_version)`
+    still works after accept — needed for broadcast/catch-up)
   - `{:error, :step_failed, message}` if a step fails to apply
   """
   def receive_steps(%__MODULE__{version: version}, _client_id, client_version, _steps)
@@ -80,13 +85,23 @@ defmodule ProsemirrorEx.Authority do
     {:ok, auth}
   end
 
-  def receive_steps(%__MODULE__{} = auth, client_id, _client_version, steps)
+  def receive_steps(%__MODULE__{max_history: max_history} = auth, client_id, client_version, steps)
       when is_list(steps) do
+    if is_integer(max_history) and length(steps) > max_history do
+      {:error, :batch_too_large}
+    else
+      apply_and_append(auth, client_id, client_version, steps)
+    end
+  end
+
+  defp apply_and_append(auth, client_id, _client_version, steps) do
     case apply_steps(auth.doc, steps) do
       {:ok, new_doc} ->
         new_steps = auth.steps ++ steps
         new_client_ids = auth.step_client_ids ++ List.duplicate(client_id, length(steps))
-        {trimmed_steps, trimmed_ids} = trim_history(new_steps, new_client_ids, auth.max_history)
+        # Keep at least the just-accepted batch so steps_since(pre-batch version) works.
+        {trimmed_steps, trimmed_ids} =
+          trim_history(new_steps, new_client_ids, auth.max_history, length(steps))
 
         {:ok,
          %{
@@ -149,15 +164,17 @@ defmodule ProsemirrorEx.Authority do
 
   # ── Private ──────────────────────────────────────────────────────────
 
-  defp trim_history(steps, client_ids, nil), do: {steps, client_ids}
+  defp trim_history(steps, client_ids, nil, _min_keep), do: {steps, client_ids}
 
-  defp trim_history(steps, client_ids, max_history) when length(steps) <= max_history do
-    {steps, client_ids}
-  end
+  defp trim_history(steps, client_ids, max_history, min_keep) do
+    keep = max(max_history, min_keep)
 
-  defp trim_history(steps, client_ids, max_history) do
-    drop = length(steps) - max_history
-    {Enum.drop(steps, drop), Enum.drop(client_ids, drop)}
+    if length(steps) <= keep do
+      {steps, client_ids}
+    else
+      drop = length(steps) - keep
+      {Enum.drop(steps, drop), Enum.drop(client_ids, drop)}
+    end
   end
 
   defp apply_steps(doc, []), do: {:ok, doc}

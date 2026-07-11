@@ -168,8 +168,15 @@ defmodule ProsemirrorEx.Authority.Server do
   end
 
   def handle_call({:subscribe, pid}, _from, state) when is_pid(pid) do
-    ref = Process.monitor(pid)
-    {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, ref)}}
+    case Map.fetch(state.subscribers, pid) do
+      {:ok, _ref} ->
+        # Idempotent: already subscribed — do not create another monitor.
+        {:reply, :ok, state}
+
+      :error ->
+        ref = Process.monitor(pid)
+        {:reply, :ok, %{state | subscribers: Map.put(state.subscribers, pid, ref)}}
+    end
   end
 
   def handle_call({:unsubscribe, pid}, _from, state) do

@@ -251,5 +251,42 @@ defmodule ProsemirrorEx.AuthorityTest do
         Authority.new(schema, nil, max_history: 0)
       end
     end
+
+    test "rejects a batch larger than max_history" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      auth = Authority.new(schema, doc_node, max_history: 2)
+
+      steps = [
+        make_insert_step(schema, " a", 6),
+        make_insert_step(schema, " b", 8),
+        make_insert_step(schema, " c", 10)
+      ]
+
+      assert {:error, :batch_too_large} = Authority.receive_steps(auth, "c1", 0, steps)
+      assert Authority.version(auth) == 0
+    end
+
+    test "steps_since from pre-batch version works after a max-sized batch" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      auth = Authority.new(schema, doc_node, max_history: 2)
+
+      # Fill history
+      {:ok, auth} = Authority.receive_steps(auth, "c1", 0, [make_insert_step(schema, " a", 6)])
+      {:ok, auth} = Authority.receive_steps(auth, "c2", 1, [make_insert_step(schema, " b", 8)])
+
+      # Max-sized batch at version 2 — after trim, pre-batch version must still be available
+      batch = [
+        make_insert_step(schema, " c", 10),
+        make_insert_step(schema, " d", 12)
+      ]
+
+      assert {:ok, auth} = Authority.receive_steps(auth, "c3", 2, batch)
+      assert Authority.version(auth) == 4
+      assert {:ok, steps, client_ids} = Authority.steps_since(auth, 2)
+      assert length(steps) == 2
+      assert client_ids == ["c3", "c3"]
+    end
   end
 end

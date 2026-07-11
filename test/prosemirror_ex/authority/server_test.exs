@@ -388,6 +388,22 @@ defmodule ProsemirrorEx.Authority.ServerTest do
 
       refute_receive {:authority_update, _}, 50
     end
+
+    test "re-subscribe is idempotent and does not leak monitors" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      server = start_server(schema: schema, doc: doc_node)
+
+      assert :ok = Server.subscribe(server)
+      assert :ok = Server.subscribe(server)
+      assert :ok = Server.subscribe(server)
+
+      step_json = make_insert_step_json(schema, " world", 6)
+      assert {:ok, 1} = Server.receive_steps(server, "clientA", 0, [step_json])
+
+      assert_receive {:authority_update, %{version: 1}}
+      refute_receive {:authority_update, _}, 50
+    end
   end
 
   describe "max_history" do
