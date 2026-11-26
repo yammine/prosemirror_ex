@@ -41,9 +41,8 @@ defmodule ProsemirrorEx.Transform.Structure do
   # ── Private helpers ──────────────────────────────────────────────────
 
   # Create a mapping that maps only through steps from `from` to the end.
-  # Keep explicit `to` arg for standalone compatibility with Wave 2A Mapping.slice/3.
   defp mapping_from(mapping, from) do
-    Mapping.slice(mapping, from, length(mapping.maps))
+    Mapping.slice(mapping, from)
   end
 
   defp can_cut(node, start_idx, end_idx) do

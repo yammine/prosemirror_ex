@@ -12,7 +12,7 @@ defmodule ProsemirrorEx.Transform.TransformTest do
     ReplaceStep
   }
 
-  alias ProsemirrorEx.Model.{Fragment, Mark, MarkType, Node, Schema, Slice}
+  alias ProsemirrorEx.Model.{Mark, MarkType, Node, Schema, Slice}
 
   describe "Transform.new/1" do
     test "creates a transform with empty steps and docs" do

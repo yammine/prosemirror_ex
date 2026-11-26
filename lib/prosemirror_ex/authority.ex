@@ -23,6 +23,7 @@ defmodule ProsemirrorEx.Authority do
   """
 
   alias ProsemirrorEx.Model.{Node, NodeType, Schema}
+  alias ProsemirrorEx.Transform.Step
 
   defstruct [
     :schema,
@@ -282,7 +283,7 @@ defmodule ProsemirrorEx.Authority do
 
   defp apply_steps(doc, [step | rest]) do
     try do
-      result = step.__struct__.apply(step, doc)
+      result = Step.apply(step, doc)
 
       if result.doc do
         apply_steps(result.doc, rest)

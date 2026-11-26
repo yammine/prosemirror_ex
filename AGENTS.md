@@ -40,7 +40,7 @@ Document transformation via invertible, mappable steps. Each step produces a new
 |--------|---------|-------------------|
 | `Transform.Transform` | Main orchestrator, accumulates steps | All document mutations, chaining operations |
 | `Transform.Step` | Step behaviour + JSON registry | Defining new step types, step deserialization |
-| `Transform.StepRegistry` | Lazy built-in step registration | Ensuring built-in step JSON IDs are loaded |
+| `Transform.StepRegistry` | Built-in step registry shim | Backwards-compatible `ensure_registered/0` no-op |
 | `Transform.StepResult` | Step application result (ok/fail) | Handling step outcomes |
 | `Transform.StepMap` | Position change triples from one step | Understanding how positions shift |
 | `Transform.Mapping` | Chains StepMaps with mirror recovery | Collaborative editing, rebasing, undo |
@@ -102,9 +102,9 @@ lib/
         ├── mark_step.ex          # AddMarkStep, RemoveMarkStep, AddNodeMarkStep, RemoveNodeMarkStep
         ├── replace.ex            # Fitter algorithm + replaceRange/deleteRange
         ├── replace_step.ex       # ReplaceStep + ReplaceAroundStep
-        ├── step.ex               # Step behaviour + registry (persistent_term)
+        ├── step.ex               # Step behaviour, dispatch helpers & custom JSON registry
         ├── step_map.ex           # StepMap (position triples)
-        ├── step_registry.ex      # Lazy built-in step registration
+        ├── step_registry.ex      # Backwards-compatible no-op shim
         ├── step_result.ex        # StepResult struct
         ├── structure.ex          # lift, wrap, split, join, setBlockType, etc.
         ├── transform.ex          # Transform struct + all convenience methods
@@ -123,12 +123,12 @@ Schema node specs use content expressions like `"paragraph+"`, `"inline*"`, `"he
 All document mutations happen through `Step` structs. Each step is invertible (for undo), mappable (for collaborative editing), and serializable (for persistence/networking). The `Transform` struct accumulates steps and maintains a `Mapping` for position tracking.
 
 ### Wire Format
-JSON serialization is byte-for-byte compatible with the JS ProseMirror libraries. Documents serialize via `Node.to_json/1` / `Node.from_json/2`. Steps serialize via `step.__struct__.to_json(step)` / `Step.from_json/2` with a `"stepType"` discriminator field.
+JSON serialization is byte-for-byte compatible with the JS ProseMirror libraries. Documents serialize via `Node.to_json/1` / `Node.from_json/2`. Steps serialize via `Step.to_json/1` / `Step.from_json/2` with a `"stepType"` discriminator field.
 
 ## Testing
 
 ```bash
-mix test                                # Run full test suite (unit + StreamData property tests)
+mix test                                # Run all 1354 tests (24 properties, 1330 unit tests)
 mix test test/prosemirror_ex/model/     # Model tests
 mix test test/prosemirror_ex/transform/ # Transform tests
 mix test test/prosemirror_ex/authority* # Authority & Authority.Server tests
@@ -180,7 +180,7 @@ doc = ProsemirrorEx.Model.Node.from_json(schema, json)
 ### Apply steps from JSON (collaborative editing)
 ```elixir
 step = ProsemirrorEx.Transform.Step.from_json(schema, step_json)
-result = step.__struct__.apply(step, doc)
+result = ProsemirrorEx.Transform.Step.apply(step, doc)
 if result.doc, do: result.doc, else: raise result.failed
 ```
 
@@ -205,7 +205,7 @@ Collaborative editing central authority (server-side counterpart to `prosemirror
 
 - **TextNode as Node with non-nil `:text`** — no separate struct, pattern match on `:text` field
 - **ContentMatch uses pure immutable maps** — DFA states are stored in an immutable `:states` map by state ID (no ETS tables)
-- **Step registry via `:persistent_term`** — global, cross-process, registered lazily via `StepRegistry.ensure_registered/0` (and in `test/test_helper.exs`)
+- **Step dispatch & custom registry** — `Step.from_json/2` pattern-matches all 8 built-in `stepType` strings directly; custom step types register via `Step.json_id/2` (serialized via `:global.trans` into `:persistent_term`)
 - **Transform extensibility** — functions pattern match on map keys (`%{doc: _, steps: _, ...}`) not `%Transform{}`, so `Transaction` can extend it
 - **Mappable as protocol** — both StepMap and Mapping implement it; third-party types can too
 - **Authority history trim** — `max_history` mirrors the official collab demo; trimmed versions return `:history_unavailable`

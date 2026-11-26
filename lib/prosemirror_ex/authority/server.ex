@@ -178,7 +178,7 @@ defmodule ProsemirrorEx.Authority.Server do
          {:ok, steps} <- deserialize_steps(state.auth.schema, steps_json),
          {:ok, new_auth} <- Authority.receive_steps(state.auth, client_id, version, steps) do
       if steps != [] and map_size(state.subscribers) > 0 do
-        steps_json_out = Enum.map(steps, fn s -> s.__struct__.to_json(s) end)
+        steps_json_out = Enum.map(steps, &Step.to_json/1)
         client_ids = List.duplicate(client_id, length(steps))
 
         notify_subscribers(state.subscribers, %{
@@ -210,7 +210,7 @@ defmodule ProsemirrorEx.Authority.Server do
   def handle_call({:steps_since, version}, _from, state) do
     case Authority.steps_since(state.auth, version) do
       {:ok, steps, client_ids} ->
-        steps_json = Enum.map(steps, fn s -> s.__struct__.to_json(s) end)
+        steps_json = Enum.map(steps, &Step.to_json/1)
         {:reply, {:ok, steps_json, client_ids}, state}
 
       error ->
