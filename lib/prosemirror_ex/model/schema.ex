@@ -7,29 +7,39 @@ defmodule ProsemirrorEx.Model.Schema do
   Ported from ProseMirror's schema.ts.
   """
 
-  alias ProsemirrorEx.Model.NodeType
-  alias ProsemirrorEx.Model.MarkType
   alias ProsemirrorEx.Model.ContentMatch
+  alias ProsemirrorEx.Model.Fragment
   alias ProsemirrorEx.Model.Mark
+  alias ProsemirrorEx.Model.MarkType
   alias ProsemirrorEx.Model.Node, as: PmNode
+  alias ProsemirrorEx.Model.NodeType
 
+  @type t :: %__MODULE__{
+          spec: map(),
+          nodes: %{String.t() => NodeType.t()},
+          marks: %{String.t() => MarkType.t()},
+          top_node_type: NodeType.t() | nil,
+          linebreak_replacement: NodeType.t() | nil,
+          cached: map()
+        }
+
+  # `cached` is preserved as `%{}` for struct parity with JS ProseMirror Schema.
   defstruct [:spec, :nodes, :marks, :top_node_type, :linebreak_replacement, :cached]
 
   @doc """
   Construct a schema from a schema specification map.
 
   The spec should have:
-  - "nodes" => list of {name, node_spec} tuples
-  - "marks" => (optional) list of {name, mark_spec} tuples
-  - "topNode" => (optional) name of the top node type, defaults to "doc"
+  - "nodes" => list of `{name, node_spec}` tuples
+  - "marks" => (optional) list of `{name, mark_spec}` tuples
+  - "topNode" => (optional) name of the top node type, defaults to `"doc"`
   """
-  def new(spec) do
-    # Normalize the spec
-    nodes_list = Map.get(spec, "nodes", [])
-    marks_list = Map.get(spec, "marks", [])
-    top_node_name = Map.get(spec, "topNode", "doc")
+  @spec new(map()) :: t()
+  def new(spec) when is_map(spec) do
+    nodes_list = (Map.get(spec, "nodes") || []) |> dedup_specs()
+    marks_list = (Map.get(spec, "marks") || []) |> dedup_specs()
+    top_node_name = Map.get(spec, "topNode") || "doc"
 
-    # Create a partial schema struct that we'll fill in
     schema = %__MODULE__{
       spec: spec,
       nodes: %{},
@@ -40,9 +50,8 @@ defmodule ProsemirrorEx.Model.Schema do
     }
 
     # Step 1: Compile NodeTypes
-    nodes = compile_node_types(nodes_list, schema)
+    nodes = compile_node_types(nodes_list)
 
-    # Validate
     unless Map.has_key?(nodes, top_node_name) do
       raise "Schema is missing its top node type ('#{top_node_name}')"
     end
@@ -58,10 +67,7 @@ defmodule ProsemirrorEx.Model.Schema do
     end
 
     # Step 2: Compile MarkTypes
-    marks = compile_mark_types(marks_list, schema)
-
-    # Update schema with nodes and marks
-    schema = %{schema | nodes: nodes, marks: marks}
+    marks = compile_mark_types(marks_list)
 
     # Step 3: Check for node/mark name collisions
     Enum.each(nodes, fn {name, _} ->
@@ -70,57 +76,46 @@ defmodule ProsemirrorEx.Model.Schema do
       end
     end)
 
-    # Step 4: Compile content expressions and resolve inline_content
-    content_expr_cache = %{}
-
-    # Set node definition order for ContentMatch group resolution
-    # This ensures groups are resolved in the same order as they're defined in the schema spec,
-    # matching the JS OrderedMap behavior. Critical for recursive types like blockquote.
+    # Step 4: Compile content expressions (passing node_order explicitly)
+    # and resolve inline_content, mark_set, and linebreak_replacement.
     node_order = Enum.map(nodes_list, fn {name, _} -> name end)
-    Process.put(:_pm_content_match_node_order, node_order)
 
-    {nodes, linebreak_replacement, _cache} =
-      Enum.reduce(nodes_list, {nodes, nil, content_expr_cache}, fn {name, node_spec},
-                                                                   {ns, lbr, cache} ->
+    {nodes, lbr_name, content_expr_by_node} =
+      Enum.reduce(nodes_list, {nodes, nil, %{}}, fn {name, node_spec}, {ns, lbr, expr_acc} ->
         type = ns[name]
-        content_expr = Map.get(node_spec, "content", "")
-        mark_expr = Map.get(node_spec, "marks", :not_set)
+        content_expr = Map.get(node_spec, "content") || ""
 
-        # Parse content expression (with caching)
-        {content_match, cache} =
-          case Map.get(cache, content_expr) do
+        {content_match, expr_acc} =
+          case Map.get(expr_acc, content_expr) do
             nil ->
-              cm = ContentMatch.parse(content_expr, ns)
-              {cm, Map.put(cache, content_expr, cm)}
+              cm = ContentMatch.parse(content_expr, ns, node_order)
+              {cm, Map.put(expr_acc, content_expr, cm)}
 
             cm ->
-              {cm, cache}
+              {cm, expr_acc}
           end
 
         inline_content = ContentMatch.inline_content(content_match)
-
         is_leaf = content_match == ContentMatch.empty()
         is_textblock = type.is_block && inline_content
         is_atom_val = is_leaf || Map.get(node_spec, "atom", false) == true
 
-        # Resolve mark set
         mark_set =
-          cond do
-            mark_expr == "_" ->
+          case Map.get(node_spec, "marks") do
+            "_" ->
               nil
 
-            is_binary(mark_expr) and mark_expr != :not_set ->
-              if mark_expr == "" do
-                []
-              else
-                gather_marks(schema, String.split(mark_expr, " "))
-              end
-
-            mark_expr == :not_set ->
+            nil ->
               if !inline_content, do: [], else: nil
+
+            "" ->
+              []
+
+            mark_expr when is_binary(mark_expr) ->
+              mark_names = String.split(mark_expr, " ", trim: true)
+              if mark_names == [], do: [], else: do_gather_marks(marks, mark_names)
           end
 
-        # Check linebreak replacement
         lbr =
           if Map.get(node_spec, "linebreakReplacement", false) do
             if lbr != nil, do: raise("Multiple linebreak nodes defined")
@@ -128,7 +123,7 @@ defmodule ProsemirrorEx.Model.Schema do
             if !type.is_inline || !is_leaf,
               do: raise("Linebreak replacement nodes must be inline leaf nodes")
 
-            type
+            name
           else
             lbr
           end
@@ -140,61 +135,129 @@ defmodule ProsemirrorEx.Model.Schema do
             is_leaf: is_leaf,
             is_textblock: is_textblock,
             is_atom: is_atom_val,
-            mark_set: mark_set
+            mark_set: mark_set,
+            mark_set_names: mark_set && MapSet.new(mark_set, & &1.name)
         }
 
-        {Map.put(ns, name, updated_type), lbr, cache}
+        {Map.put(ns, name, updated_type), lbr, expr_acc}
       end)
-
-    # Clean up process dictionary
-    Process.delete(:_pm_content_match_node_order)
-
-    # Step 4b: Update DFA edges to reference the updated node types (with content_match set)
-    # This is needed because content expressions are parsed before all node types
-    # have their content_match populated. The DFA edges store references to node types.
-    Enum.each(nodes, fn {_name, type} ->
-      if type.content_match != nil do
-        ContentMatch.update_node_types(type.content_match, nodes)
-      end
-    end)
 
     # Step 5: Resolve mark exclusions
     marks =
       Enum.reduce(marks_list, marks, fn {name, mark_spec}, ms ->
         type = ms[name]
-        excl = Map.get(mark_spec, "excludes", :not_set)
 
-        excluded =
-          cond do
-            excl == :not_set -> [type]
-            excl == "" -> []
-            true -> gather_marks(schema, String.split(excl, " "))
+        {excluded, excluded_names} =
+          case Map.get(mark_spec, "excludes") do
+            nil ->
+              {[type], MapSet.new([type.name])}
+
+            "" ->
+              {[], MapSet.new()}
+
+            "_" ->
+              all_marks = Map.values(ms)
+              {all_marks, MapSet.new(all_marks, & &1.name)}
+
+            excl when is_binary(excl) ->
+              names = String.split(excl, " ", trim: true)
+
+              if names == [] do
+                {[], MapSet.new()}
+              else
+                gathered = do_gather_marks(ms, names)
+                {gathered, MapSet.new(gathered, & &1.name)}
+              end
           end
 
-        updated_type = %{type | excluded: excluded}
-        Map.put(ms, name, updated_type)
+        Map.put(ms, name, %{type | excluded: excluded, excluded_names: excluded_names})
       end)
 
-    # Update schema with final nodes, marks, and back-references
-    schema = %{
+    # Step 6: Finalize MarkTypes, NodeTypes, ContentMatches, and back-references.
+    # First attach finalized marks to nodes and update ContentMatch DFAs & wrap caches.
+    nodes =
+      Map.new(nodes, fn {name, type} ->
+        updated_mark_set =
+          case type.mark_set do
+            nil -> nil
+            list when is_list(list) -> Enum.map(list, fn mt -> Map.get(marks, mt.name, mt) end)
+          end
+
+        {name, %{type | mark_set: updated_mark_set}}
+      end)
+
+    # Pass 1: Update DFA edge NodeTypes so every edge has content_match & mark_set
+    updated_cms =
+      Map.new(content_expr_by_node, fn {expr, cm} ->
+        {expr, ContentMatch.update_node_types(cm, nodes)}
+      end)
+
+    nodes =
+      Enum.reduce(nodes_list, nodes, fn {name, node_spec}, ns ->
+        expr = Map.get(node_spec, "content") || ""
+        cm = Map.fetch!(updated_cms, expr)
+        Map.update!(ns, name, fn type -> %{type | content_match: cm} end)
+      end)
+
+    # Pass 2: Precompute wrapping tables once all node types have updated content_match
+    wrapped_cms =
+      Map.new(updated_cms, fn {expr, cm} ->
+        {expr, ContentMatch.precompute_wrappings(cm)}
+      end)
+
+    nodes =
+      Enum.reduce(nodes_list, nodes, fn {name, node_spec}, ns ->
+        expr = Map.get(node_spec, "content") || ""
+        cm = Map.fetch!(wrapped_cms, expr)
+        Map.update!(ns, name, fn type -> %{type | content_match: cm} end)
+      end)
+
+    # Build shallow_schema (no nested nodes/marks maps) to terminate back-reference
+    # depth so Schema structs stay small and fast to copy across processes, while
+    # preserving 2-hop access (e.g. doc.type.schema.nodes[x].schema.linebreak_replacement).
+    shallow_schema = %{
       schema
-      | nodes: nodes,
-        marks: marks,
-        top_node_type: nodes[top_node_name],
-        linebreak_replacement: linebreak_replacement,
-        cached: %{}
+      | nodes: %{},
+        marks: %{},
+        top_node_type: nil,
+        linebreak_replacement: lbr_name && nodes[lbr_name]
     }
 
-    # Step 6: Update all node types and mark types with the final schema reference
-    nodes =
-      Enum.reduce(nodes, %{}, fn {name, type}, acc ->
-        Map.put(acc, name, %{type | schema: schema})
+    # First link pass: attach shallow_schema so nodes inside snapshot_schema have non-nil schema
+    {nodes_l1, marks_l1, cms_l1} =
+      link_schema_refs(nodes, marks, nodes_list, wrapped_cms, shallow_schema)
+
+    snapshot_schema = %{
+      schema
+      | nodes: nodes_l1,
+        marks: marks_l1,
+        top_node_type: nodes_l1[top_node_name],
+        linebreak_replacement: lbr_name && nodes_l1[lbr_name]
+    }
+
+    # Second link pass: attach snapshot_schema to top-level nodes/marks and edge refs
+    {nodes_l2, marks_l2, _cms_l2} =
+      link_schema_refs(nodes_l1, marks_l1, nodes_list, cms_l1, snapshot_schema)
+
+    %{
+      snapshot_schema
+      | nodes: nodes_l2,
+        marks: marks_l2,
+        top_node_type: nodes_l2[top_node_name],
+        linebreak_replacement: lbr_name && nodes_l2[lbr_name]
+    }
+  end
+
+  defp link_schema_refs(nodes, marks, nodes_list, cms_by_expr, target_schema) do
+    marks =
+      Map.new(marks, fn {name, type} ->
+        {name, %{type | schema: target_schema}}
       end)
 
     marks =
-      Enum.reduce(marks, %{}, fn {name, type}, acc ->
-        # Also update the instance's type to point to the new mark type with schema
-        updated_type = %{type | schema: schema}
+      Map.new(marks, fn {name, type} ->
+        updated_excluded = Enum.map(type.excluded, fn ex -> Map.get(marks, ex.name, ex) end)
+        updated_type = %{type | excluded: updated_excluded}
 
         updated_type =
           if updated_type.instance do
@@ -203,45 +266,43 @@ defmodule ProsemirrorEx.Model.Schema do
             updated_type
           end
 
-        Map.put(acc, name, updated_type)
+        {name, updated_type}
       end)
 
-    # Also update the excluded lists in marks to point to the updated mark types
-    marks =
-      Enum.reduce(marks, marks, fn {name, type}, acc ->
-        updated_excluded =
-          Enum.map(type.excluded, fn ex_type ->
-            Map.get(acc, ex_type.name, ex_type)
-          end)
-
-        Map.put(acc, name, %{type | excluded: updated_excluded})
-      end)
-
-    # Update top_node_type
-    top_node_type = nodes[top_node_name]
-
-    # Final schema with everything pointing correctly
-    schema = %{schema | nodes: nodes, marks: marks, top_node_type: top_node_type}
-
-    # One more pass: update node type mark_sets to reference the final mark types
     nodes =
-      Enum.reduce(nodes, %{}, fn {name, type}, acc ->
+      Map.new(nodes, fn {name, type} ->
         updated_mark_set =
           case type.mark_set do
-            nil ->
-              nil
-
-            list when is_list(list) ->
-              Enum.map(list, fn mt -> Map.get(schema.marks, mt.name, mt) end)
+            nil -> nil
+            list when is_list(list) -> Enum.map(list, fn mt -> Map.get(marks, mt.name, mt) end)
           end
 
-        Map.put(acc, name, %{type | mark_set: updated_mark_set, schema: schema})
+        {name, %{type | mark_set: updated_mark_set, schema: target_schema}}
       end)
 
-    %{schema | nodes: nodes, top_node_type: nodes[top_node_name]}
+    updated_cms =
+      Map.new(cms_by_expr, fn {expr, cm} ->
+        {expr, ContentMatch.update_node_types(cm, nodes)}
+      end)
+
+    nodes =
+      Enum.reduce(nodes_list, nodes, fn {name, node_spec}, ns ->
+        expr = Map.get(node_spec, "content") || ""
+        cm = Map.fetch!(updated_cms, expr)
+        Map.update!(ns, name, fn type -> %{type | content_match: cm} end)
+      end)
+
+    {nodes, marks, updated_cms}
   end
 
   @doc "Create a node in this schema."
+  @spec node(
+          t(),
+          String.t() | NodeType.t(),
+          map() | nil,
+          Fragment.t() | PmNode.t() | [PmNode.t()] | nil,
+          [Mark.t()] | Mark.t() | nil
+        ) :: PmNode.t()
   def node(schema, type, attrs \\ nil, content \\ nil, marks \\ nil)
 
   def node(schema, type, attrs, content, marks) when is_binary(type) do
@@ -254,7 +315,8 @@ defmodule ProsemirrorEx.Model.Schema do
   end
 
   @doc "Create a text node in the schema. Empty text nodes are not allowed."
-  def text(schema, text, marks \\ nil) do
+  @spec text(t(), String.t(), [Mark.t()] | Mark.t() | nil) :: PmNode.t()
+  def text(schema, text, marks \\ nil) when is_binary(text) do
     if text == "" do
       raise "Empty text nodes are not allowed"
     end
@@ -266,11 +328,12 @@ defmodule ProsemirrorEx.Model.Schema do
       attrs: type.default_attrs || %{},
       text: text,
       marks: Mark.set_from(marks),
-      content: nil
+      content: Fragment.empty()
     }
   end
 
   @doc "Create a mark with the given type and attributes."
+  @spec mark(t(), String.t() | MarkType.t(), map() | nil) :: Mark.t()
   def mark(schema, type, attrs \\ nil)
 
   def mark(schema, type, attrs) when is_binary(type) do
@@ -288,6 +351,7 @@ defmodule ProsemirrorEx.Model.Schema do
   end
 
   @doc "Look up a node type by name."
+  @spec node_type(t(), String.t()) :: NodeType.t()
   def node_type(schema, name) do
     case Map.get(schema.nodes, name) do
       nil -> raise "Unknown node type: #{name}"
@@ -296,22 +360,37 @@ defmodule ProsemirrorEx.Model.Schema do
   end
 
   @doc "Deserialize a node from its JSON representation."
+  @spec node_from_json(t(), map()) :: PmNode.t()
   def node_from_json(schema, json) do
     PmNode.from_json(schema, json)
   end
 
   @doc "Deserialize a mark from its JSON representation."
+  @spec mark_from_json(t(), map()) :: Mark.t()
   def mark_from_json(schema, json) do
     Mark.from_json(schema, json)
   end
 
-  # ── Private helpers ──────────────────────────────────────────────
+  # ── Private / Shared Internal Helpers ────────────────────────────
 
-  defp compile_node_types(nodes_list, _schema) do
+  defp dedup_specs(list) do
+    list
+    |> Enum.reverse()
+    |> Enum.uniq_by(&elem(&1, 0))
+    |> Enum.reverse()
+  end
+
+  defp compile_node_types(nodes_list) do
     Enum.reduce(nodes_list, %{}, fn {name, spec}, acc ->
       attrs = init_attrs(name, Map.get(spec, "attrs"))
       default_attrs = compute_default_attrs(attrs)
-      groups = if spec["group"], do: String.split(spec["group"], " "), else: []
+
+      groups =
+        case Map.get(spec, "group") do
+          g when is_binary(g) and g != "" -> String.split(g, " ", trim: true)
+          _ -> []
+        end
+
       is_block = !(spec["inline"] == true || name == "text")
 
       type = %NodeType{
@@ -325,42 +404,25 @@ defmodule ProsemirrorEx.Model.Schema do
         is_block: is_block,
         is_text: name == "text",
         is_inline: !is_block,
-        # These are filled in later during content expression compilation
         content_match: nil,
         inline_content: false,
         is_textblock: false,
         is_leaf: false,
         is_atom: false,
-        mark_set: nil
+        mark_set: nil,
+        mark_set_names: nil
       }
 
       Map.put(acc, name, type)
     end)
   end
 
-  defp compile_mark_types(marks_list, _schema) do
+  defp compile_mark_types(marks_list) do
     marks_list
     |> Enum.with_index()
     |> Enum.reduce(%{}, fn {{name, spec}, rank}, acc ->
       attrs = init_attrs(name, Map.get(spec, "attrs"))
       default_attrs = compute_default_attrs(attrs)
-
-      instance =
-        if default_attrs do
-          type_stub = %MarkType{
-            name: name,
-            rank: rank,
-            schema: nil,
-            spec: spec,
-            attrs: attrs,
-            excluded: nil,
-            instance: nil
-          }
-
-          %Mark{type: type_stub, attrs: default_attrs}
-        else
-          nil
-        end
 
       type = %MarkType{
         name: name,
@@ -369,13 +431,14 @@ defmodule ProsemirrorEx.Model.Schema do
         spec: spec,
         attrs: attrs,
         excluded: nil,
-        instance: instance
+        excluded_names: nil,
+        instance: nil
       }
 
-      # Fix the instance's type reference
       type =
-        if instance do
-          %{type | instance: %{instance | type: type}}
+        if default_attrs do
+          instance = %Mark{type: type, attrs: default_attrs}
+          %{type | instance: instance}
         else
           type
         end
@@ -385,6 +448,7 @@ defmodule ProsemirrorEx.Model.Schema do
   end
 
   @doc false
+  @spec init_attrs(String.t(), map() | nil) :: map()
   def init_attrs(_type_name, nil), do: %{}
 
   def init_attrs(_type_name, attrs_spec) when is_map(attrs_spec) do
@@ -402,22 +466,21 @@ defmodule ProsemirrorEx.Model.Schema do
   end
 
   @doc false
+  @spec compute_default_attrs(map()) :: map() | nil
   def compute_default_attrs(attrs) when map_size(attrs) == 0, do: %{}
 
   def compute_default_attrs(attrs) do
-    result =
-      Enum.reduce_while(attrs, %{}, fn {name, attr}, acc ->
-        if attr.has_default do
-          {:cont, Map.put(acc, name, attr.default)}
-        else
-          {:halt, nil}
-        end
-      end)
-
-    result
+    Enum.reduce_while(attrs, %{}, fn {name, attr}, acc ->
+      if attr.has_default do
+        {:cont, Map.put(acc, name, attr.default)}
+      else
+        {:halt, nil}
+      end
+    end)
   end
 
   @doc false
+  @spec compute_attrs(map(), map() | nil) :: map()
   def compute_attrs(attrs_spec, value) do
     Enum.reduce(attrs_spec, %{}, fn {name, attr}, acc ->
       given =
@@ -435,32 +498,100 @@ defmodule ProsemirrorEx.Model.Schema do
     end)
   end
 
-  defp has_required?(attrs) do
-    Enum.any?(attrs, fn {_name, attr} -> !attr.has_default end)
+  @doc false
+  @spec check_attrs_map(map(), term(), String.t()) :: :ok
+  def check_attrs_map(attrs_spec, raw_attrs, label) do
+    cond do
+      raw_attrs == nil ->
+        :ok
+
+      is_map(raw_attrs) and not is_struct(raw_attrs) ->
+        Enum.each(raw_attrs, fn {name, _val} ->
+          unless Map.has_key?(attrs_spec, name) do
+            raise "Unsupported attribute #{name} for #{label}"
+          end
+        end)
+
+        :ok
+
+      true ->
+        raise "Invalid attributes for #{label}"
+    end
   end
 
-  defp gather_marks(%__MODULE__{} = schema, mark_names) do
-    # schema.marks might not be populated yet during construction,
-    # so we pass it through. During construction, this is called
-    # after marks are compiled.
-    do_gather_marks(schema.marks, mark_names)
+  @doc false
+  @spec validate_attrs(map(), map() | nil, String.t()) :: :ok
+  def validate_attrs(attrs_spec, values, kind) do
+    values =
+      case values do
+        nil -> %{}
+        m when is_map(m) and not is_struct(m) -> m
+        _ -> raise "Invalid attributes for #{kind}"
+      end
+
+    Enum.each(values, fn {name, _val} ->
+      unless Map.has_key?(attrs_spec, name) do
+        raise "Unsupported attribute #{name} for #{kind}"
+      end
+    end)
+
+    Enum.each(attrs_spec, fn {attr_name, attr} ->
+      validate = Map.get(attr, :validate)
+
+      cond do
+        is_function(validate, 1) ->
+          validate.(Map.get(values, attr_name))
+
+        is_binary(validate) ->
+          validate_type_expr!(validate, attr_name, Map.get(values, attr_name))
+
+        true ->
+          :ok
+      end
+    end)
+  end
+
+  defp validate_type_expr!(expr, attr_name, value) do
+    allowed =
+      expr
+      |> String.split("|")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    actual = js_type_name(value)
+
+    unless actual in allowed do
+      raise "Expected value of type #{expr} for attribute #{attr_name}, got #{actual}"
+    end
+  end
+
+  defp js_type_name(nil), do: "null"
+  defp js_type_name(v) when is_binary(v), do: "string"
+  defp js_type_name(v) when is_number(v), do: "number"
+  defp js_type_name(v) when is_boolean(v), do: "boolean"
+  defp js_type_name(v) when is_map(v), do: "object"
+  defp js_type_name(v) when is_list(v), do: "array"
+  defp js_type_name(_v), do: "unknown"
+
+  defp has_required?(attrs) do
+    Enum.any?(attrs, fn {_name, attr} -> !attr.has_default end)
   end
 
   defp do_gather_marks(marks_map, mark_names) do
     Enum.flat_map(mark_names, fn name ->
       case Map.get(marks_map, name) do
         nil ->
-          # Try groups
           found =
             marks_map
             |> Map.values()
             |> Enum.filter(fn mt ->
               name == "_" ||
-                (mt.spec["group"] && name in String.split(mt.spec["group"], " "))
+                (is_binary(mt.spec["group"]) and mt.spec["group"] != "" and
+                   name in String.split(mt.spec["group"], " ", trim: true))
             end)
 
           if found == [] do
-            raise SyntaxError, description: "Unknown mark type: '#{name}'"
+            raise "Unknown mark type: '#{name}'"
           end
 
           found

@@ -7,28 +7,50 @@ defmodule ProsemirrorEx.Model.ContentMatch do
 
   Ported from ProseMirror's content.ts.
 
-  Because DFA states can form cycles (e.g., `image*` creates a state
-  with a self-loop), we use an ETS-backed registry to store the actual
-  edge lists. Each ContentMatch holds an `id` that indexes into this
-  registry. The `next` field is populated lazily from the registry.
+  DFA states (including cycles such as `image*`) are represented as an
+  immutable, garbage-collected state graph stored in `states` keyed by
+  integer `state_id`, with zero ETS tables or mutable process state.
   """
 
   alias ProsemirrorEx.Model.Fragment
   alias ProsemirrorEx.Model.NodeType
 
-  defstruct [:valid_end, :next, :wrap_cache, :_reg, :_id]
+  @type state_id :: non_neg_integer()
+  @type edge :: {NodeType.t(), state_id()}
+  @type dfa_state :: %{
+          valid_end: boolean(),
+          edges: [edge()],
+          edge_map: %{String.t() => state_id()},
+          wrap_cache: %{String.t() => [NodeType.t()]} | nil
+        }
+
+  @type t :: %__MODULE__{
+          valid_end: boolean(),
+          next: [{NodeType.t(), t()}],
+          wrap_cache: %{String.t() => [NodeType.t()]} | nil,
+          states: %{state_id() => dfa_state()} | nil,
+          state_id: state_id()
+        }
+
+  defstruct valid_end: true, next: [], wrap_cache: %{}, states: nil, state_id: 0
 
   # ── Public API ──────────────────────────────────────────────────────
 
   @doc """
   Parse a content expression string into a ContentMatch DFA.
 
-  `node_types` is a map of name => %NodeType{}.
+  `node_types` is a map of name => `%NodeType{}`.
+  Optional `node_order` specifies the ordered list of node names for group
+  resolution (matching JS `OrderedMap` definition order).
   """
-  def parse("", _node_types), do: empty()
+  @spec parse(String.t(), %{String.t() => NodeType.t()}, [String.t()] | nil) :: t()
+  def parse(string, node_types, node_order \\ nil)
 
-  def parse(string, node_types) when is_binary(string) and is_map(node_types) do
-    stream = tokenize(string, node_types)
+  def parse("", _node_types, _node_order), do: empty()
+
+  def parse(string, node_types, node_order)
+      when is_binary(string) and is_map(node_types) do
+    stream = tokenize(string, node_types, node_order)
 
     case stream.tokens do
       [] ->
@@ -49,37 +71,104 @@ defmodule ProsemirrorEx.Model.ContentMatch do
   end
 
   @doc "Match a node type, returning a match after that node if successful."
-  def match_type(%__MODULE__{} = cm, %NodeType{} = type) do
-    edges = get_edges(cm)
+  @spec match_type(t() | nil, NodeType.t()) :: t() | nil
+  def match_type(nil, _type), do: nil
 
-    Enum.find_value(edges, fn {edge_type, next_id} ->
-      if edge_type.name == type.name do
-        get_state(cm._reg, next_id)
-      end
+  def match_type(%__MODULE__{states: nil, next: next}, %NodeType{name: name}) do
+    Enum.find_value(next, fn {edge_type, next_cm} ->
+      if edge_type.name == name, do: next_cm
     end)
   end
 
-  def match_type(nil, _type), do: nil
+  def match_type(%__MODULE__{states: states, state_id: id}, %NodeType{name: name}) do
+    state = Map.fetch!(states, id)
+
+    case Map.get(state.edge_map, name) do
+      nil -> nil
+      next_id -> build_state(states, next_id)
+    end
+  end
 
   @doc "Try to match a fragment. Returns the resulting match when successful."
+  @spec match_fragment(t() | nil, Fragment.t(), non_neg_integer(), non_neg_integer() | nil) ::
+          t() | nil
   def match_fragment(match, frag, start \\ 0, end_val \\ nil)
 
   def match_fragment(nil, _frag, _start, _end_val), do: nil
 
-  def match_fragment(%__MODULE__{} = match, %Fragment{} = frag, start, end_val) do
-    end_val = end_val || Fragment.child_count(frag)
+  def match_fragment(%__MODULE__{} = match, %Fragment{content: content}, start, nil) do
+    sliced = if start == 0, do: content, else: Enum.drop(content, start)
+    match_node_list(match, sliced)
+  end
 
+  def match_fragment(%__MODULE__{} = match, %Fragment{content: content}, start, end_val) do
     if start >= end_val do
       match
     else
-      Enum.reduce_while(start..(end_val - 1)//1, match, fn i, cur ->
-        child = Fragment.child(frag, i)
+      sliced = if start == 0, do: content, else: Enum.drop(content, start)
+      match_node_list_take(match, sliced, end_val - start)
+    end
+  end
 
-        case match_type(cur, child.type) do
-          nil -> {:halt, nil}
-          next -> {:cont, next}
-        end
-      end)
+  defp match_node_list(match, []), do: match
+
+  defp match_node_list(%__MODULE__{states: nil} = match, [child | rest]) do
+    case match_type(match, child.type) do
+      nil -> nil
+      next -> match_node_list(next, rest)
+    end
+  end
+
+  defp match_node_list(%__MODULE__{states: states, state_id: id} = match, list) do
+    case step_states(list, states, id) do
+      nil -> nil
+      ^id -> match
+      final_id -> build_state(states, final_id)
+    end
+  end
+
+  defp step_states([], _states, id), do: id
+
+  defp step_states([child | rest], states, id) do
+    edge_map = Map.fetch!(states, id).edge_map
+
+    case Map.get(edge_map, child.type.name) do
+      nil -> nil
+      next_id -> step_states(rest, states, next_id)
+    end
+  end
+
+  defp match_node_list_take(match, _list, 0), do: match
+  defp match_node_list_take(match, [], _remaining), do: match
+
+  defp match_node_list_take(%__MODULE__{states: nil} = match, [child | rest], remaining) do
+    case match_type(match, child.type) do
+      nil -> nil
+      next -> match_node_list_take(next, rest, remaining - 1)
+    end
+  end
+
+  defp match_node_list_take(
+         %__MODULE__{states: states, state_id: id} = match,
+         list,
+         remaining
+       ) do
+    case step_states_take(list, remaining, states, id) do
+      nil -> nil
+      ^id -> match
+      final_id -> build_state(states, final_id)
+    end
+  end
+
+  defp step_states_take(_list, 0, _states, id), do: id
+  defp step_states_take([], _remaining, _states, id), do: id
+
+  defp step_states_take([child | rest], remaining, states, id) do
+    edge_map = Map.fetch!(states, id).edge_map
+
+    case Map.get(edge_map, child.type.name) do
+      nil -> nil
+      next_id -> step_states_take(rest, remaining - 1, states, next_id)
     end
   end
 
@@ -90,50 +179,58 @@ defmodule ProsemirrorEx.Model.ContentMatch do
   had to be inserted). When `to_end` is true, only return a fragment
   if the resulting match goes to the end of the content expression.
   """
+  @spec fill_before(t(), Fragment.t(), boolean(), non_neg_integer()) :: Fragment.t() | nil
   def fill_before(
         %__MODULE__{} = match,
         %Fragment{} = after_frag,
         to_end \\ false,
         start_index \\ 0
       ) do
-    seen_ref = make_ref()
-    Process.put({:fill_before_seen, seen_ref}, MapSet.new([match._id]))
-
-    result = do_fill_before(match, [], after_frag, to_end, start_index, seen_ref)
-
-    Process.delete({:fill_before_seen, seen_ref})
+    seen = MapSet.new([match.state_id])
+    {result, _seen} = do_fill_before(match, [], after_frag, to_end, start_index, seen)
     result
   end
 
-  defp do_fill_before(%__MODULE__{} = match, types, after_frag, to_end, start_index, seen_ref) do
+  defp do_fill_before(%__MODULE__{} = match, rev_types, after_frag, to_end, start_index, seen) do
     finished = match_fragment(match, after_frag, start_index)
 
     if finished != nil and (not to_end or finished.valid_end) do
-      nodes = Enum.map(types, fn tp -> NodeType.create_and_fill(tp) end)
-      Fragment.from(nodes)
+      nodes = rev_types |> Enum.reverse() |> Enum.map(&NodeType.create_and_fill/1)
+      {Fragment.from(nodes), seen}
     else
       edges = get_edges(match)
-
-      find_fill(edges, match._reg, types, after_frag, to_end, start_index, seen_ref)
+      find_fill(edges, match, rev_types, after_frag, to_end, start_index, seen)
     end
   end
 
-  defp find_fill([], _reg, _types, _after_frag, _to_end, _start_index, _seen_ref), do: nil
+  defp find_fill([], _match, _rev_types, _after_frag, _to_end, _start_index, seen),
+    do: {nil, seen}
 
-  defp find_fill([{type, next_id} | rest], reg, types, after_frag, to_end, start_index, seen_ref) do
-    seen = Process.get({:fill_before_seen, seen_ref})
+  defp find_fill(
+         [{type, target} | rest],
+         match,
+         rev_types,
+         after_frag,
+         to_end,
+         start_index,
+         seen
+       ) do
+    target_id = edge_target_id(target)
 
     if not type.is_text and not (type.has_required_attrs == true) and
-         not MapSet.member?(seen, next_id) do
-      Process.put({:fill_before_seen, seen_ref}, MapSet.put(seen, next_id))
-      next = get_state(reg, next_id)
+         not MapSet.member?(seen, target_id) do
+      seen = MapSet.put(seen, target_id)
+      next = resolve_edge_target(match, target)
 
-      case do_fill_before(next, types ++ [type], after_frag, to_end, start_index, seen_ref) do
-        nil -> find_fill(rest, reg, types, after_frag, to_end, start_index, seen_ref)
-        found -> found
+      case do_fill_before(next, [type | rev_types], after_frag, to_end, start_index, seen) do
+        {nil, seen} ->
+          find_fill(rest, match, rev_types, after_frag, to_end, start_index, seen)
+
+        {found, seen} ->
+          {found, seen}
       end
     else
-      find_fill(rest, reg, types, after_frag, to_end, start_index, seen_ref)
+      find_fill(rest, match, rev_types, after_frag, to_end, start_index, seen)
     end
   end
 
@@ -141,25 +238,21 @@ defmodule ProsemirrorEx.Model.ContentMatch do
   Find a set of wrapping node types that would allow a node of the
   given type to appear at this position.
   """
-  def find_wrapping(%__MODULE__{wrap_cache: wrap_cache} = match, %NodeType{} = target) do
-    case find_in_wrap_cache(wrap_cache, target) do
-      {:found, result} -> result
-      :not_found -> compute_wrapping(match, target)
-    end
+  @spec find_wrapping(t(), NodeType.t()) :: [NodeType.t()] | nil
+  def find_wrapping(%__MODULE__{wrap_cache: wrap_cache}, %NodeType{} = target)
+      when is_map(wrap_cache) do
+    Map.get(wrap_cache, target.name)
   end
 
-  defp find_in_wrap_cache([], _target), do: :not_found
-
-  defp find_in_wrap_cache([key, value | rest], target) do
-    if key.name == target.name, do: {:found, value}, else: find_in_wrap_cache(rest, target)
+  def find_wrapping(%__MODULE__{} = match, %NodeType{} = target) do
+    compute_wrapping(match, target)
   end
-
-  defp find_in_wrap_cache([_], _target), do: :not_found
 
   @doc "Compute wrapping using BFS."
+  @spec compute_wrapping(t(), NodeType.t()) :: [NodeType.t()] | nil
   def compute_wrapping(%__MODULE__{} = match, %NodeType{} = target) do
     seen = MapSet.new()
-    active = :queue.from_list([{match, nil, nil}])
+    active = :queue.from_list([{match, []}])
     do_compute_wrapping(active, seen, target)
   end
 
@@ -168,25 +261,24 @@ defmodule ProsemirrorEx.Model.ContentMatch do
       {:empty, _} ->
         nil
 
-      {{:value, {match, type_or_nil, via}}, rest_queue} ->
+      {{:value, {match, rev_path}}, rest_queue} ->
         if match_type(match, target) != nil do
-          build_wrapping_result({match, type_or_nil, via})
-          |> Enum.reverse()
+          Enum.reverse(rev_path)
         else
           edges = get_edges(match)
 
           {new_queue, new_seen} =
-            Enum.reduce(edges, {rest_queue, seen}, fn {edge_type, next_id}, {q, s} ->
-              next = get_state(match._reg, next_id)
+            Enum.reduce(edges, {rest_queue, seen}, fn {edge_type, target_ref}, {q, s} ->
+              next = resolve_edge_target(match, target_ref)
 
               if not edge_type.is_leaf and
                    not (edge_type.has_required_attrs == true) and
                    not MapSet.member?(s, edge_type.name) and
-                   (type_or_nil == nil or next.valid_end) do
+                   (rev_path == [] or next.valid_end) do
                 content_match = edge_type.content_match || empty()
 
                 {
-                  :queue.in({content_match, edge_type, {match, type_or_nil, via}}, q),
+                  :queue.in({content_match, [edge_type | rev_path]}, q),
                   MapSet.put(s, edge_type.name)
                 }
               else
@@ -199,47 +291,106 @@ defmodule ProsemirrorEx.Model.ContentMatch do
     end
   end
 
-  defp build_wrapping_result({_match, nil, _via}), do: []
-  defp build_wrapping_result({_match, type, via}), do: [type | build_wrapping_result(via)]
+  @doc """
+  Precompute wrapping lookup tables (`wrap_cache`) for every state in this
+  ContentMatch DFA using a single BFS per state.
+  """
+  @spec precompute_wrappings(t()) :: t()
+  def precompute_wrappings(%__MODULE__{states: nil} = cm), do: cm
+
+  def precompute_wrappings(%__MODULE__{states: states, state_id: state_id}) do
+    updated_states =
+      Map.new(states, fn {id, state} ->
+        cm = build_state(states, id)
+        wc = compute_all_wrappings(cm)
+        {id, %{state | wrap_cache: wc}}
+      end)
+
+    build_state(updated_states, state_id)
+  end
+
+  defp compute_all_wrappings(start_match) do
+    active = :queue.from_list([{start_match, []}])
+    do_compute_all_wrappings(active, MapSet.new(), %{})
+  end
+
+  defp do_compute_all_wrappings(active, seen, wrappings) do
+    case :queue.out(active) do
+      {:empty, _} ->
+        wrappings
+
+      {{:value, {match, rev_path}}, rest_queue} ->
+        path = Enum.reverse(rev_path)
+        edges = get_edges(match)
+
+        {new_wrappings, new_queue, new_seen} =
+          Enum.reduce(edges, {wrappings, rest_queue, seen}, fn {edge_type, target_ref},
+                                                               {w, q, s} ->
+            w = Map.put_new(w, edge_type.name, path)
+
+            if not edge_type.is_leaf and
+                 not (edge_type.has_required_attrs == true) and
+                 not MapSet.member?(s, edge_type.name) do
+              next = resolve_edge_target(match, target_ref)
+
+              if rev_path == [] or next.valid_end do
+                content_match = edge_type.content_match || empty()
+
+                {
+                  w,
+                  :queue.in({content_match, [edge_type | rev_path]}, q),
+                  MapSet.put(s, edge_type.name)
+                }
+              else
+                {w, q, s}
+              end
+            else
+              {w, q, s}
+            end
+          end)
+
+        do_compute_all_wrappings(new_queue, new_seen, new_wrappings)
+    end
+  end
 
   @doc "Get the first matching node type that can be generated."
+  @spec default_type(t()) :: NodeType.t() | nil
   def default_type(%__MODULE__{} = cm) do
     edges = get_edges(cm)
 
-    Enum.find_value(edges, fn {type, _next_id} ->
+    Enum.find_value(edges, fn {type, _target} ->
       if not type.is_text and not (type.has_required_attrs == true), do: type
     end)
   end
 
   @doc "Whether the match state has inline content."
+  @spec inline_content(t()) :: boolean()
   def inline_content(%__MODULE__{} = cm) do
-    edges = get_edges(cm)
-
-    case edges do
+    case get_edges(cm) do
       [] -> false
       [{type, _} | _] -> type.is_inline == true
     end
   end
 
   @doc "The number of outgoing edges."
+  @spec edge_count(t()) :: non_neg_integer()
   def edge_count(%__MODULE__{} = cm) do
-    edges = get_edges(cm)
-    length(edges)
+    length(get_edges(cm))
   end
 
   @doc "Get the nth outgoing edge as {type, next_match}."
+  @spec edge(t(), non_neg_integer()) :: {NodeType.t(), t()}
   def edge(%__MODULE__{} = cm, n) do
     edges = get_edges(cm)
 
-    if n >= length(edges) do
-      raise "There's no #{n}th edge in this content match"
+    case Enum.fetch(edges, n) do
+      {:ok, {type, target}} -> {type, resolve_edge_target(cm, target)}
+      :error -> raise "There's no #{n}th edge in this content match"
     end
-
-    {type, next_id} = Enum.at(edges, n)
-    {type, get_state(cm._reg, next_id)}
   end
 
   @doc "Whether this match state is compatible with another."
+  @spec compatible(t(), t()) :: boolean()
   def compatible(%__MODULE__{} = cm_a, %__MODULE__{} = cm_b) do
     edges_a = get_edges(cm_a)
     edges_b = get_edges(cm_b)
@@ -250,85 +401,84 @@ defmodule ProsemirrorEx.Model.ContentMatch do
   end
 
   @doc "The empty content match (matches only empty content)."
+  @spec empty() :: t()
   def empty do
-    %__MODULE__{valid_end: true, next: [], wrap_cache: [], _reg: nil, _id: nil}
+    %__MODULE__{valid_end: true, next: [], wrap_cache: %{}, states: nil, state_id: 0}
   end
 
   @doc """
   Update the node types stored in this content match's DFA edges.
-  Takes a map of name => updated_node_type. This is needed because
-  during schema construction, content expressions are parsed before
-  all node types have their content_match set, so the DFA edges
-  reference stale types.
+  Takes a map of `name => updated_node_type` and returns the updated
+  ContentMatch struct.
   """
-  def update_node_types(%__MODULE__{_reg: nil}, _node_types), do: :ok
+  @spec update_node_types(t(), %{String.t() => NodeType.t()}) :: t()
+  def update_node_types(%__MODULE__{states: nil} = cm, _node_types), do: cm
 
-  def update_node_types(%__MODULE__{_reg: reg}, node_types) when is_map(node_types) do
-    # Get all edge entries from the ETS table
-    :ets.foldl(
-      fn
-        {{:edges, key}, edges}, _acc ->
-          updated_edges =
-            Enum.map(edges, fn {type, target_key} ->
-              case Map.get(node_types, type.name) do
-                nil -> {type, target_key}
-                updated_type -> {updated_type, target_key}
-              end
-            end)
+  def update_node_types(%__MODULE__{states: states, state_id: state_id}, node_types)
+      when is_map(node_types) do
+    updated_states =
+      Map.new(states, fn {id, state} ->
+        updated_edges =
+          Enum.map(state.edges, fn {type, target_id} ->
+            {Map.get(node_types, type.name, type), target_id}
+          end)
 
-          :ets.insert(reg, {{:edges, key}, updated_edges})
-          :ok
+        updated_wrap_cache =
+          case state.wrap_cache do
+            nil ->
+              nil
 
-        _, acc ->
-          acc
-      end,
-      :ok,
-      reg
-    )
+            wc ->
+              Map.new(wc, fn {target_name, wrappers} ->
+                {target_name, Enum.map(wrappers, fn w -> Map.get(node_types, w.name, w) end)}
+              end)
+          end
+
+        {id, %{state | edges: updated_edges, wrap_cache: updated_wrap_cache}}
+      end)
+
+    build_state(updated_states, state_id)
   end
 
-  # ── Registry helpers ──────────────────────────────────────────────
+  # ── State helpers ──────────────────────────────────────────────────
 
-  # Get edges for a ContentMatch. For registry-backed states, look up from registry.
-  # For simple states (like empty()), use the `next` field directly.
-  defp get_edges(%__MODULE__{_reg: nil, next: next}), do: next
+  defp get_edges(%__MODULE__{states: nil, next: next}), do: next
+  defp get_edges(%__MODULE__{states: states, state_id: id}), do: Map.fetch!(states, id).edges
 
-  defp get_edges(%__MODULE__{_reg: reg, _id: id}) do
-    case :ets.lookup(reg, {:edges, id}) do
-      [{_, edges}] -> edges
-      [] -> []
-    end
+  defp build_state(states, id) do
+    state = Map.fetch!(states, id)
+
+    %__MODULE__{
+      valid_end: state.valid_end,
+      next: [],
+      wrap_cache: state.wrap_cache,
+      states: states,
+      state_id: id
+    }
   end
 
-  # Get a ContentMatch state from the registry by id
-  defp get_state(nil, _id), do: nil
+  defp resolve_edge_target(%__MODULE__{states: nil}, %__MODULE__{} = next_cm), do: next_cm
+  defp resolve_edge_target(%__MODULE__{states: states}, next_id), do: build_state(states, next_id)
 
-  defp get_state(reg, id) do
-    case :ets.lookup(reg, {:state, id}) do
-      [{_, state}] -> state
-      [] -> nil
-    end
-  end
+  defp edge_target_id(%__MODULE__{state_id: id}), do: id
+  defp edge_target_id(id), do: id
 
   # ── Tokenizer ─────────────────────────────────────────────────────
 
   defmodule TokenStream do
     @moduledoc false
-    defstruct [:string, :node_types, :node_names_ordered, :tokens, :pos, :inline]
+    defstruct [:string, :node_types, :node_names_ordered, :tokens, :inline]
   end
 
-  defp tokenize(string, node_types) do
+  defp tokenize(string, node_types, node_order) do
     tokens =
       Regex.split(~r/\s*(?=\b|\W|$)/, string)
       |> Enum.reject(&(&1 == ""))
 
-    # Preserve iteration order by sorting map keys
-    # In JS, OrderedMap preserves insertion order. We need a stable order
-    # for group resolution to match JS behavior. We store the ordered names.
     ordered_names =
-      case Process.get(:_pm_content_match_node_order) do
+      case node_order do
         nil -> Map.keys(node_types) |> Enum.sort()
-        names -> names
+        names when is_list(names) -> names
       end
 
     %TokenStream{
@@ -336,29 +486,23 @@ defmodule ProsemirrorEx.Model.ContentMatch do
       node_types: node_types,
       node_names_ordered: ordered_names,
       tokens: tokens,
-      pos: 0,
       inline: nil
     }
   end
 
-  defp current_token(%TokenStream{tokens: tokens, pos: pos}) do
-    if pos < length(tokens), do: Enum.at(tokens, pos)
-  end
+  defp current_token(%TokenStream{tokens: []}), do: nil
+  defp current_token(%TokenStream{tokens: [tok | _]}), do: tok
 
-  defp eat(%TokenStream{} = stream, tok) do
-    if current_token(stream) == tok do
-      {true, %{stream | pos: stream.pos + 1}}
-    else
-      {false, stream}
-    end
-  end
+  defp eat(%TokenStream{tokens: [tok | rest]} = stream, tok),
+    do: {true, %{stream | tokens: rest}}
 
-  defp advance(%TokenStream{} = stream) do
-    %{stream | pos: stream.pos + 1}
-  end
+  defp eat(%TokenStream{} = stream, _tok), do: {false, stream}
+
+  defp advance(%TokenStream{tokens: [_ | rest]} = stream), do: %{stream | tokens: rest}
+  defp advance(%TokenStream{} = stream), do: stream
 
   defp parse_err(%TokenStream{string: string}, msg) do
-    raise SyntaxError, description: "#{msg} (in content expression '#{string}')"
+    raise "#{msg} (in content expression '#{string}')"
   end
 
   # ── Parser ────────────────────────────────────────────────────────
@@ -368,14 +512,19 @@ defmodule ProsemirrorEx.Model.ContentMatch do
     do_parse_choice([first], stream)
   end
 
-  defp do_parse_choice(exprs, stream) do
+  defp do_parse_choice(rev_exprs, stream) do
     {ate, stream} = eat(stream, "|")
 
     if ate do
       {next, stream} = parse_expr_seq(stream)
-      do_parse_choice(exprs ++ [next], stream)
+      do_parse_choice([next | rev_exprs], stream)
     else
-      expr = if length(exprs) == 1, do: hd(exprs), else: {:choice, exprs}
+      expr =
+        case rev_exprs do
+          [single] -> single
+          _ -> {:choice, Enum.reverse(rev_exprs)}
+        end
+
       {expr, stream}
     end
   end
@@ -385,14 +534,19 @@ defmodule ProsemirrorEx.Model.ContentMatch do
     do_parse_seq([first], stream)
   end
 
-  defp do_parse_seq(exprs, stream) do
+  defp do_parse_seq(rev_exprs, stream) do
     tok = current_token(stream)
 
     if tok != nil and tok != ")" and tok != "|" do
       {next, stream} = parse_expr_subscript(stream)
-      do_parse_seq(exprs ++ [next], stream)
+      do_parse_seq([next | rev_exprs], stream)
     else
-      expr = if length(exprs) == 1, do: hd(exprs), else: {:seq, exprs}
+      expr =
+        case rev_exprs do
+          [single] -> single
+          _ -> {:seq, Enum.reverse(rev_exprs)}
+        end
+
       {expr, stream}
     end
   end
@@ -403,22 +557,22 @@ defmodule ProsemirrorEx.Model.ContentMatch do
   end
 
   defp do_parse_subscript(expr, stream) do
-    cond do
-      current_token(stream) == "+" ->
+    case current_token(stream) do
+      "+" ->
         do_parse_subscript({:plus, expr}, advance(stream))
 
-      current_token(stream) == "*" ->
+      "*" ->
         do_parse_subscript({:star, expr}, advance(stream))
 
-      current_token(stream) == "?" ->
+      "?" ->
         do_parse_subscript({:opt, expr}, advance(stream))
 
-      current_token(stream) == "{" ->
+      "{" ->
         stream = advance(stream)
         {range_expr, stream} = parse_expr_range(stream, expr)
         do_parse_subscript(range_expr, stream)
 
-      true ->
+      _ ->
         {expr, stream}
     end
   end
@@ -455,6 +609,10 @@ defmodule ProsemirrorEx.Model.ContentMatch do
       parse_err(stream, "Unclosed braced range")
     end
 
+    if max != -1 and max < min do
+      parse_err(stream, "Invalid range {#{min}, #{max}}")
+    end
+
     {{:range, min, max, expr}, stream}
   end
 
@@ -479,7 +637,7 @@ defmodule ProsemirrorEx.Model.ContentMatch do
 
       {types, stream} = resolve_name(stream, tok)
 
-      {exprs, stream} =
+      {rev_exprs, stream} =
         Enum.reduce(types, {[], stream}, fn type, {acc, s} ->
           s =
             if s.inline == nil do
@@ -492,12 +650,16 @@ defmodule ProsemirrorEx.Model.ContentMatch do
               s
             end
 
-          {acc ++ [{:name, type}], s}
+          {[{:name, type} | acc], s}
         end)
 
       stream = advance(stream)
 
-      expr = if length(exprs) == 1, do: hd(exprs), else: {:choice, exprs}
+      expr =
+        case rev_exprs do
+          [single] -> single
+          _ -> {:choice, Enum.reverse(rev_exprs)}
+        end
 
       {expr, stream}
     end
@@ -508,7 +670,6 @@ defmodule ProsemirrorEx.Model.ContentMatch do
 
     case Map.get(types, name) do
       nil ->
-        # Use ordered names to maintain definition order (matches JS OrderedMap behavior)
         result =
           stream.node_names_ordered
           |> Enum.map(&Map.get(types, &1))
@@ -531,331 +692,291 @@ defmodule ProsemirrorEx.Model.ContentMatch do
   # ── NFA Builder ───────────────────────────────────────────────────
 
   defp build_nfa(expr) do
-    ref = make_ref()
-    Process.put({:nfa, ref}, %{0 => []})
-    Process.put({:nfa_next_id, ref}, 1)
+    state = %{nodes: %{0 => []}, next_id: 1, edge_seq: 0}
+    {edge_ids, state} = compile_nfa(expr, 0, state)
+    {final_id, state} = nfa_new_node(state)
+    state = nfa_connect(state, edge_ids, final_id)
 
-    edge_ids = compile_nfa(expr, 0, ref)
-    final_id = nfa_new_node(ref)
-    nfa_connect(edge_ids, final_id, ref)
-
-    nfa_map = Process.get({:nfa, ref})
-    max_id = Process.get({:nfa_next_id, ref}) - 1
-
-    Process.delete({:nfa, ref})
-    Process.delete({:nfa_next_id, ref})
+    nfa_map = state.nodes
+    max_id = state.next_id - 1
 
     for i <- 0..max_id do
-      edges = Map.get(nfa_map, i, [])
-      Enum.map(edges, fn {_eref, term, to} -> {term, to} end)
+      nfa_map
+      |> Map.get(i, [])
+      |> Enum.reverse()
+      |> Enum.map(fn {_eid, term, to} -> {term, to} end)
     end
   end
 
-  defp nfa_new_node(ref) do
-    id = Process.get({:nfa_next_id, ref})
-    nfa_map = Process.get({:nfa, ref})
-    Process.put({:nfa, ref}, Map.put(nfa_map, id, []))
-    Process.put({:nfa_next_id, ref}, id + 1)
-    id
+  defp nfa_new_node(%{nodes: nodes, next_id: id} = state) do
+    {id, %{state | nodes: Map.put(nodes, id, []), next_id: id + 1}}
   end
 
-  defp nfa_add_edge(from, to, term, ref) do
-    edge_ref = make_ref()
-    nfa_map = Process.get({:nfa, ref})
-    edges = Map.get(nfa_map, from, [])
-    Process.put({:nfa, ref}, Map.put(nfa_map, from, edges ++ [{edge_ref, term, to}]))
-    edge_ref
+  defp nfa_add_edge(%{nodes: nodes, edge_seq: seq} = state, from, to, term) do
+    edge_id = {from, seq}
+    edges = Map.get(nodes, from, [])
+    updated_nodes = Map.put(nodes, from, [{edge_id, term, to} | edges])
+    {edge_id, %{state | nodes: updated_nodes, edge_seq: seq + 1}}
   end
 
-  defp nfa_connect(edge_refs, to, ref) do
-    nfa_map = Process.get({:nfa, ref})
+  defp nfa_connect(state, [], _to), do: state
 
-    updated =
-      Enum.reduce(nfa_map, nfa_map, fn {state_id, edges}, acc ->
+  defp nfa_connect(%{nodes: nodes} = state, edge_ids, to) do
+    by_from =
+      Enum.reduce(edge_ids, %{}, fn {from, _seq} = eid, acc ->
+        Map.update(acc, from, MapSet.new([eid]), &MapSet.put(&1, eid))
+      end)
+
+    updated_nodes =
+      Enum.reduce(by_from, nodes, fn {from, eid_set}, acc ->
         updated_edges =
-          Enum.map(edges, fn {eref, term, edge_to} = edge ->
-            if edge_to == nil and Enum.member?(edge_refs, eref) do
-              {eref, term, to}
+          acc
+          |> Map.get(from, [])
+          |> Enum.map(fn {eid, term, edge_to} = edge ->
+            if edge_to == nil and MapSet.member?(eid_set, eid) do
+              {eid, term, to}
             else
               edge
             end
           end)
 
-        Map.put(acc, state_id, updated_edges)
+        Map.put(acc, from, updated_edges)
       end)
 
-    Process.put({:nfa, ref}, updated)
+    %{state | nodes: updated_nodes}
   end
 
-  defp compile_nfa(expr, from, ref) do
+  defp compile_nfa(expr, from, state) do
     case expr do
       {:choice, exprs} ->
-        Enum.flat_map(exprs, fn e -> compile_nfa(e, from, ref) end)
-
-      {:seq, exprs} ->
-        compile_nfa_seq(exprs, 0, from, ref)
-
-      {:star, inner} ->
-        loop = nfa_new_node(ref)
-        nfa_add_edge(from, loop, nil, ref)
-        inner_edges = compile_nfa(inner, loop, ref)
-        nfa_connect(inner_edges, loop, ref)
-        [nfa_add_edge(loop, nil, nil, ref)]
-
-      {:plus, inner} ->
-        loop = nfa_new_node(ref)
-        inner_edges = compile_nfa(inner, from, ref)
-        nfa_connect(inner_edges, loop, ref)
-        inner_edges2 = compile_nfa(inner, loop, ref)
-        nfa_connect(inner_edges2, loop, ref)
-        [nfa_add_edge(loop, nil, nil, ref)]
-
-      {:opt, inner} ->
-        [nfa_add_edge(from, nil, nil, ref) | compile_nfa(inner, from, ref)]
-
-      {:range, min, max, inner} ->
-        cur =
-          Enum.reduce(0..(min - 1)//1, from, fn _i, c ->
-            next = nfa_new_node(ref)
-            inner_edges = compile_nfa(inner, c, ref)
-            nfa_connect(inner_edges, next, ref)
-            next
+        {rev_edges, state} =
+          Enum.reduce(exprs, {[], state}, fn e, {acc, s} ->
+            {edges, s} = compile_nfa(e, from, s)
+            {Enum.reverse(edges, acc), s}
           end)
 
-        if max == -1 do
-          inner_edges = compile_nfa(inner, cur, ref)
-          nfa_connect(inner_edges, cur, ref)
-          [nfa_add_edge(cur, nil, nil, ref)]
-        else
-          cur =
-            Enum.reduce(min..(max - 1)//1, cur, fn _i, c ->
-              next = nfa_new_node(ref)
-              nfa_add_edge(c, next, nil, ref)
-              inner_edges = compile_nfa(inner, c, ref)
-              nfa_connect(inner_edges, next, ref)
-              next
-            end)
+        {Enum.reverse(rev_edges), state}
 
-          [nfa_add_edge(cur, nil, nil, ref)]
+      {:seq, exprs} ->
+        compile_nfa_seq(exprs, from, state)
+
+      {:star, inner} ->
+        {loop, state} = nfa_new_node(state)
+        {_e, state} = nfa_add_edge(state, from, loop, nil)
+        {inner_edges, state} = compile_nfa(inner, loop, state)
+        state = nfa_connect(state, inner_edges, loop)
+        {out_edge, state} = nfa_add_edge(state, loop, nil, nil)
+        {[out_edge], state}
+
+      {:plus, inner} ->
+        {loop, state} = nfa_new_node(state)
+        {inner_edges, state} = compile_nfa(inner, from, state)
+        state = nfa_connect(state, inner_edges, loop)
+        {inner_edges2, state} = compile_nfa(inner, loop, state)
+        state = nfa_connect(state, inner_edges2, loop)
+        {out_edge, state} = nfa_add_edge(state, loop, nil, nil)
+        {[out_edge], state}
+
+      {:opt, inner} ->
+        {skip_edge, state} = nfa_add_edge(state, from, nil, nil)
+        {inner_edges, state} = compile_nfa(inner, from, state)
+        {[skip_edge | inner_edges], state}
+
+      {:range, min, max, inner} ->
+        {cur, state} = compile_nfa_required(min, from, inner, state)
+
+        if max == -1 do
+          {inner_edges, state} = compile_nfa(inner, cur, state)
+          state = nfa_connect(state, inner_edges, cur)
+          {out_edge, state} = nfa_add_edge(state, cur, nil, nil)
+          {[out_edge], state}
+        else
+          {cur, state} = compile_nfa_optional(max - min, cur, inner, state)
+          {out_edge, state} = nfa_add_edge(state, cur, nil, nil)
+          {[out_edge], state}
         end
 
       {:name, type} ->
-        [nfa_add_edge(from, nil, type, ref)]
+        {edge, state} = nfa_add_edge(state, from, nil, type)
+        {[edge], state}
     end
   end
 
-  defp compile_nfa_seq(exprs, i, from, ref) do
-    edges = compile_nfa(Enum.at(exprs, i), from, ref)
+  defp compile_nfa_seq([last], from, state), do: compile_nfa(last, from, state)
 
-    if i == length(exprs) - 1 do
-      edges
-    else
-      next = nfa_new_node(ref)
-      nfa_connect(edges, next, ref)
-      compile_nfa_seq(exprs, i + 1, next, ref)
-    end
+  defp compile_nfa_seq([first | rest], from, state) do
+    {edges, state} = compile_nfa(first, from, state)
+    {next, state} = nfa_new_node(state)
+    state = nfa_connect(state, edges, next)
+    compile_nfa_seq(rest, next, state)
+  end
+
+  defp compile_nfa_required(0, cur, _inner, state), do: {cur, state}
+
+  defp compile_nfa_required(n, cur, inner, state) when n > 0 do
+    {next, state} = nfa_new_node(state)
+    {inner_edges, state} = compile_nfa(inner, cur, state)
+    state = nfa_connect(state, inner_edges, next)
+    compile_nfa_required(n - 1, next, inner, state)
+  end
+
+  defp compile_nfa_optional(n, cur, _inner, state) when n <= 0, do: {cur, state}
+
+  defp compile_nfa_optional(n, cur, inner, state) do
+    {next, state} = nfa_new_node(state)
+    {_skip, state} = nfa_add_edge(state, cur, next, nil)
+    {inner_edges, state} = compile_nfa(inner, cur, state)
+    state = nfa_connect(state, inner_edges, next)
+    compile_nfa_optional(n - 1, next, inner, state)
   end
 
   # ── NFA to DFA conversion ─────────────────────────────────────────
-  #
-  # We build the DFA as a graph stored in an ETS table. Each DFA state
-  # is identified by a string key (the sorted NFA state set). States
-  # store their valid_end flag and edge list [{type, target_key}].
-  #
-  # After building the full graph, we create ContentMatch structs that
-  # reference the ETS table for edge lookups. This naturally handles
-  # cycles because edges are resolved lazily via the shared ETS table.
 
   defp build_dfa(nfa) do
     nfa_len = length(nfa)
     nfa_arr = :array.from_list(nfa)
 
-    # Build the DFA graph in a temporary map
-    graph_ref = make_ref()
-    Process.put({:dfa_graph, graph_ref}, %{})
-
     initial_states = null_from(nfa_arr, 0)
-    initial_key = states_key(initial_states)
-    dfa_explore(initial_states, nfa_arr, nfa_len, graph_ref)
 
-    graph = Process.get({:dfa_graph, graph_ref})
-    Process.delete({:dfa_graph, graph_ref})
+    {initial_id, {states_graph, _key_to_id, _next_id}} =
+      dfa_explore(initial_states, nfa_arr, nfa_len, {%{}, %{}, 0})
 
-    # Create ETS registry for the DFA
-    reg = :ets.new(:content_match_reg, [:set, :public])
-
-    # Create ContentMatch structs and store in registry
-    Enum.each(graph, fn {key, {valid_end, _edges}} ->
-      state = %__MODULE__{
-        valid_end: valid_end,
-        next: [],
-        wrap_cache: [],
-        _reg: reg,
-        _id: key
-      }
-
-      :ets.insert(reg, {{:state, key}, state})
-    end)
-
-    # Store edges
-    Enum.each(graph, fn {key, {_valid_end, edges}} ->
-      :ets.insert(reg, {{:edges, key}, edges})
-    end)
-
-    # Return the initial state
-    get_state(reg, initial_key)
+    build_state(states_graph, initial_id)
   end
 
-  defp dfa_explore(states, nfa_arr, nfa_len, graph_ref) do
-    key = states_key(states)
-    graph = Process.get({:dfa_graph, graph_ref})
+  defp dfa_explore(states, nfa_arr, nfa_len, {graph, key_to_id, next_id} = acc) do
+    case Map.get(key_to_id, states) do
+      id when is_integer(id) ->
+        {id, acc}
 
-    case Map.get(graph, key) do
       nil ->
-        valid_end = Enum.member?(states, nfa_len - 1)
+        id = next_id
+        acc = {graph, Map.put(key_to_id, states, id), next_id + 1}
 
-        # Collect outgoing transitions
+        valid_end = Enum.member?(states, nfa_len - 1)
         out = collect_dfa_transitions(states, nfa_arr)
 
-        edge_specs =
-          Enum.map(out, fn {type, target_states} ->
-            sorted = Enum.sort(target_states, :desc)
-            {type, states_key(sorted), sorted}
+        {rev_edges, edge_map, {graph, key_to_id, next_id}} =
+          Enum.reduce(out, {[], %{}, acc}, fn {type, target_states}, {es, em, a} ->
+            {target_id, a} = dfa_explore(target_states, nfa_arr, nfa_len, a)
+            {[{type, target_id} | es], Map.put(em, type.name, target_id), a}
           end)
 
-        # Store in graph BEFORE exploring children (to handle cycles)
-        Process.put(
-          {:dfa_graph, graph_ref},
-          Map.put(
-            Process.get({:dfa_graph, graph_ref}),
-            key,
-            {valid_end, Enum.map(edge_specs, fn {type, tkey, _} -> {type, tkey} end)}
-          )
-        )
+        state_entry = %{
+          valid_end: valid_end,
+          edges: Enum.reverse(rev_edges),
+          edge_map: edge_map,
+          wrap_cache: nil
+        }
 
-        # Explore children
-        Enum.each(edge_specs, fn {_type, _tkey, sorted} ->
-          dfa_explore(sorted, nfa_arr, nfa_len, graph_ref)
-        end)
-
-      _ ->
-        :ok
+        {id, {Map.put(graph, id, state_entry), key_to_id, next_id}}
     end
   end
 
   defp collect_dfa_transitions(states, nfa_arr) do
-    Enum.reduce(states, [], fn node_id, out ->
-      edges = :array.get(node_id, nfa_arr)
+    {rev_order, by_name} =
+      Enum.reduce(states, {[], %{}}, fn node_id, {order, map} ->
+        edges = :array.get(node_id, nfa_arr)
 
-      Enum.reduce(edges, out, fn {term, to}, out ->
-        if term == nil do
-          out
-        else
-          target_states = null_from(nfa_arr, to)
+        Enum.reduce(edges, {order, map}, fn {term, to}, {ord, m} ->
+          if term == nil do
+            {ord, m}
+          else
+            target_set = null_from(nfa_arr, to) |> MapSet.new()
 
-          case find_out_index(out, term) do
-            nil ->
-              out ++ [{term, target_states}]
+            case Map.get(m, term.name) do
+              nil ->
+                {[term.name | ord], Map.put(m, term.name, {term, target_set})}
 
-            idx ->
-              {_t, existing_states} = Enum.at(out, idx)
-              merged = merge_state_sets(existing_states, target_states)
-              List.replace_at(out, idx, {term, merged})
+              {existing_term, existing_set} ->
+                {ord,
+                 Map.put(m, term.name, {existing_term, MapSet.union(existing_set, target_set)})}
+            end
           end
-        end
+        end)
       end)
+
+    rev_order
+    |> Enum.reverse()
+    |> Enum.map(fn name ->
+      {term, set} = Map.fetch!(by_name, name)
+      {term, set |> MapSet.to_list() |> Enum.sort(:desc)}
     end)
   end
 
   defp null_from(nfa_arr, node_id) do
-    result_ref = make_ref()
-    Process.put({:null_result, result_ref}, [])
-
-    null_scan(nfa_arr, node_id, result_ref)
-
-    result = Process.get({:null_result, result_ref})
-    Process.delete({:null_result, result_ref})
-
+    {result, _seen} = null_scan(nfa_arr, node_id, [], MapSet.new())
     Enum.sort(result, :desc)
   end
 
-  defp null_scan(nfa_arr, node_id, result_ref) do
-    edges = :array.get(node_id, nfa_arr)
-
-    case edges do
+  defp null_scan(nfa_arr, node_id, result, seen) do
+    case :array.get(node_id, nfa_arr) do
       [{nil, to}] when to != nil ->
-        null_scan(nfa_arr, to, result_ref)
+        if MapSet.member?(seen, node_id) do
+          {result, seen}
+        else
+          null_scan(nfa_arr, to, result, MapSet.put(seen, node_id))
+        end
 
-      _ ->
-        result = Process.get({:null_result, result_ref})
+      edges ->
+        if MapSet.member?(seen, node_id) do
+          {result, seen}
+        else
+          result = [node_id | result]
+          seen = MapSet.put(seen, node_id)
 
-        if not Enum.member?(result, node_id) do
-          Process.put({:null_result, result_ref}, [node_id | result])
+          Enum.reduce(edges, {result, seen}, fn
+            {nil, to}, {res, s} when to != nil ->
+              if MapSet.member?(s, to), do: {res, s}, else: null_scan(nfa_arr, to, res, s)
 
-          Enum.each(edges, fn {term, to} ->
-            if term == nil and to != nil do
-              cur_result = Process.get({:null_result, result_ref})
-
-              if not Enum.member?(cur_result, to) do
-                null_scan(nfa_arr, to, result_ref)
-              end
-            end
+            _, acc ->
+              acc
           end)
         end
     end
   end
 
-  defp find_out_index(out, term) do
-    Enum.find_index(out, fn {t, _} -> t.name == term.name end)
-  end
-
-  defp merge_state_sets(existing, new_states) do
-    Enum.reduce(new_states, existing, fn s, acc ->
-      if Enum.member?(acc, s), do: acc, else: acc ++ [s]
-    end)
-  end
-
-  defp states_key(states), do: Enum.join(states, ",")
-
   # ── Dead-end checker ──────────────────────────────────────────────
 
-  defp check_for_dead_ends(match, stream) do
-    do_check_dead_ends([match], MapSet.new([match._id]), 0, stream)
+  defp check_for_dead_ends(%__MODULE__{} = match, stream) do
+    queue = :queue.from_list([match])
+    seen = MapSet.new([match.state_id])
+    do_check_dead_ends(queue, seen, stream)
   end
 
-  defp do_check_dead_ends(work, _seen, i, _stream) when i >= length(work), do: :ok
+  defp do_check_dead_ends(queue, seen, stream) do
+    case :queue.out(queue) do
+      {:empty, _} ->
+        :ok
 
-  defp do_check_dead_ends(work, seen, i, stream) do
-    state = Enum.at(work, i)
-    edges = get_edges(state)
-    dead = not state.valid_end
-    nodes = Enum.map(edges, fn {type, _} -> type.name end)
+      {{:value, state}, rest_queue} ->
+        edges = get_edges(state)
+        dead = not state.valid_end
+        nodes = Enum.map(edges, fn {type, _} -> type.name end)
 
-    {dead, work, seen} =
-      Enum.reduce(edges, {dead, work, seen}, fn {type, next_id}, {d, w, s} ->
-        d =
-          if d and not type.is_text and not (type.has_required_attrs == true),
-            do: false,
-            else: d
+        {dead, new_queue, new_seen} =
+          Enum.reduce(edges, {dead, rest_queue, seen}, fn {type, next_id}, {d, q, s} ->
+            d =
+              if d and not type.is_text and not (type.has_required_attrs == true),
+                do: false,
+                else: d
 
-        {w, s} =
-          if MapSet.member?(s, next_id) do
-            {w, s}
-          else
-            next = get_state(state._reg, next_id)
-            {w ++ [next], MapSet.put(s, next_id)}
-          end
+            if MapSet.member?(s, next_id) do
+              {d, q, s}
+            else
+              next = resolve_edge_target(state, next_id)
+              {d, :queue.in(next, q), MapSet.put(s, next_id)}
+            end
+          end)
 
-        {d, w, s}
-      end)
+        if dead and nodes != [] do
+          parse_err(
+            stream,
+            "Only non-generatable nodes (#{Enum.join(nodes, ", ")}) in a required position"
+          )
+        end
 
-    if dead and length(nodes) > 0 do
-      parse_err(
-        stream,
-        "Only non-generatable nodes (#{Enum.join(nodes, ", ")}) in a required position"
-      )
+        do_check_dead_ends(new_queue, new_seen, stream)
     end
-
-    do_check_dead_ends(work, seen, i + 1, stream)
   end
 end

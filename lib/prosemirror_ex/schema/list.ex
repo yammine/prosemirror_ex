@@ -76,7 +76,10 @@ defmodule ProsemirrorEx.Schema.List do
           {String.t(), map()}
         ]
   def add_list_nodes(nodes, item_content, list_group \\ nil) do
-    nodes ++ nodes(item_content, list_group)
+    (nodes ++ nodes(item_content, list_group))
+    |> Enum.reverse()
+    |> Enum.uniq_by(&elem(&1, 0))
+    |> Enum.reverse()
   end
 
   defp list_spec(base, nil), do: Map.put(base, "content", "list_item+")
