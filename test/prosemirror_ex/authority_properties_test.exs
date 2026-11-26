@@ -46,9 +46,11 @@ defmodule ProsemirrorEx.AuthorityPropertiesTest do
         )
       })
 
+    max_history_gen = StreamData.one_of([StreamData.constant(nil), StreamData.integer(3..8)])
+
     check all(
             initial_version <- StreamData.integer(0..20),
-            max_history <- StreamData.one_of([StreamData.constant(nil), StreamData.integer(3..8)]),
+            max_history <- max_history_gen,
             ops <- StreamData.list_of(batch_op_gen, min_length: 1, max_length: 15)
           ) do
       auth0 =

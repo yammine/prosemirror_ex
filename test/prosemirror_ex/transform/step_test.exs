@@ -1,9 +1,74 @@
+defmodule ProsemirrorEx.Transform.StepTest.OverrideStep do
+  @behaviour ProsemirrorEx.Transform.Step
+  alias ProsemirrorEx.Transform.{StepMap, StepResult}
+
+  defstruct []
+
+  @impl true
+  def apply(_step, _doc), do: StepResult.fail("noop")
+  @impl true
+  def invert(step, _doc), do: step
+  @impl true
+  def step_map(_step), do: StepMap.empty()
+  @impl true
+  def to_json(_step), do: %{}
+  @impl true
+  def merge(_step, _other), do: nil
+  @impl true
+  def map(_step, _mapping), do: nil
+  @impl true
+  def from_json(_schema, _json), do: %__MODULE__{}
+end
+
+defmodule ProsemirrorEx.Transform.StepTest.ConcurrentStep do
+  @behaviour ProsemirrorEx.Transform.Step
+  alias ProsemirrorEx.Transform.{StepMap, StepResult}
+
+  defstruct [:id]
+
+  @impl true
+  def apply(_step, _doc), do: StepResult.fail("noop")
+  @impl true
+  def invert(step, _doc), do: step
+  @impl true
+  def step_map(_step), do: StepMap.empty()
+  @impl true
+  def to_json(step), do: %{"stepType" => step.id}
+  @impl true
+  def merge(_step, _other), do: nil
+  @impl true
+  def map(_step, _mapping), do: nil
+  @impl true
+  def from_json(_schema, json), do: %__MODULE__{id: json["stepType"]}
+end
+
+defmodule ProsemirrorEx.Transform.StepTest.FakeStep do
+  @behaviour ProsemirrorEx.Transform.Step
+  alias ProsemirrorEx.Transform.{StepMap, StepResult}
+
+  @impl true
+  def apply(_step, _doc), do: StepResult.fail("not implemented")
+  @impl true
+  def invert(_step, _doc), do: nil
+  @impl true
+  def step_map(_step), do: StepMap.empty()
+  @impl true
+  def to_json(_step), do: %{}
+  @impl true
+  def merge(_step, _other), do: nil
+  @impl true
+  def map(_step, _mapping), do: nil
+  @impl true
+  def from_json(_schema, _json), do: %{}
+end
+
 defmodule ProsemirrorEx.Transform.StepTest do
   use ExUnit.Case, async: true
 
   import ProsemirrorEx.TestHelpers
 
   alias ProsemirrorEx.Transform.{Step, StepResult, TransformError}
+  alias ProsemirrorEx.Transform.StepTest.{ConcurrentStep, FakeStep, OverrideStep}
 
   describe "TransformError" do
     test "is an exception with a message" do
@@ -119,25 +184,6 @@ defmodule ProsemirrorEx.Transform.StepTest do
     end
 
     test "json_id/2 rejects overriding built-in step IDs" do
-      defmodule OverrideStep do
-        @behaviour ProsemirrorEx.Transform.Step
-        defstruct []
-        @impl true
-        def apply(_step, _doc), do: StepResult.fail("noop")
-        @impl true
-        def invert(step, _doc), do: step
-        @impl true
-        def step_map(_step), do: ProsemirrorEx.Transform.StepMap.empty()
-        @impl true
-        def to_json(_step), do: %{}
-        @impl true
-        def merge(_step, _other), do: nil
-        @impl true
-        def map(_step, _mapping), do: nil
-        @impl true
-        def from_json(_schema, _json), do: %__MODULE__{}
-      end
-
       for builtin <-
             ~w(replace replaceAround addMark removeMark addNodeMark removeNodeMark attr docAttr) do
         assert_raise ArgumentError, ~r/Duplicate use of step JSON ID/, fn ->
@@ -147,25 +193,6 @@ defmodule ProsemirrorEx.Transform.StepTest do
     end
 
     test "concurrent json_id/2 registrations preserve all distinct IDs" do
-      defmodule ConcurrentStep do
-        @behaviour ProsemirrorEx.Transform.Step
-        defstruct [:id]
-        @impl true
-        def apply(_step, _doc), do: StepResult.fail("noop")
-        @impl true
-        def invert(step, _doc), do: step
-        @impl true
-        def step_map(_step), do: ProsemirrorEx.Transform.StepMap.empty()
-        @impl true
-        def to_json(step), do: %{"stepType" => step.id}
-        @impl true
-        def merge(_step, _other), do: nil
-        @impl true
-        def map(_step, _mapping), do: nil
-        @impl true
-        def from_json(_schema, json), do: %__MODULE__{id: json["stepType"]}
-      end
-
       prefix = "concurrent_step_#{System.unique_integer([:positive])}_"
 
       1..20
@@ -183,25 +210,6 @@ defmodule ProsemirrorEx.Transform.StepTest do
     end
 
     test "json_id/2 registers a step module" do
-      defmodule FakeStep do
-        @behaviour ProsemirrorEx.Transform.Step
-
-        @impl true
-        def apply(_step, _doc), do: StepResult.fail("not implemented")
-        @impl true
-        def invert(_step, _doc), do: nil
-        @impl true
-        def step_map(_step), do: ProsemirrorEx.Transform.StepMap.empty()
-        @impl true
-        def to_json(_step), do: %{}
-        @impl true
-        def merge(_step, _other), do: nil
-        @impl true
-        def map(_step, _mapping), do: nil
-        @impl true
-        def from_json(_schema, _json), do: %{}
-      end
-
       Step.json_id("fake_step_test", FakeStep)
       assert Step.from_json(nil, %{"stepType" => "fake_step_test"}) == %{}
     end
@@ -219,29 +227,10 @@ defmodule ProsemirrorEx.Transform.StepTest do
     end
 
     test "json_id/2 raises for duplicate ID" do
-      defmodule FakeStep2 do
-        @behaviour ProsemirrorEx.Transform.Step
-
-        @impl true
-        def apply(_step, _doc), do: StepResult.fail("not implemented")
-        @impl true
-        def invert(_step, _doc), do: nil
-        @impl true
-        def step_map(_step), do: ProsemirrorEx.Transform.StepMap.empty()
-        @impl true
-        def to_json(_step), do: %{}
-        @impl true
-        def merge(_step, _other), do: nil
-        @impl true
-        def map(_step, _mapping), do: nil
-        @impl true
-        def from_json(_schema, _json), do: %{}
-      end
-
-      Step.json_id("duplicate_test_id", FakeStep2)
+      Step.json_id("duplicate_test_id", FakeStep)
 
       assert_raise ArgumentError, ~r/Duplicate use of step JSON ID/, fn ->
-        Step.json_id("duplicate_test_id", FakeStep2)
+        Step.json_id("duplicate_test_id", FakeStep)
       end
     end
   end
