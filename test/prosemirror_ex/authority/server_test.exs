@@ -46,6 +46,32 @@ defmodule ProsemirrorEx.Authority.ServerTest do
       assert version == 0
       assert doc_json["type"] == "doc"
     end
+
+    test "starts server with JSON map :doc, :doc_json, and initial :version" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["snapshot"])])
+      doc_json_in = Node.to_json(doc_node)
+
+      s1 = start_server(schema: schema, doc: doc_json_in, version: 10, id: :s1)
+      {doc_json_out, v1} = Server.get_doc(s1)
+      assert v1 == 10
+      assert Server.first_version(s1) == 10
+      assert doc_json_out == doc_json_in
+
+      s2 = start_server(schema: schema, doc_json: doc_json_in, version: 5, id: :s2)
+      assert Server.get_version(s2) == 5
+      assert Server.first_version(s2) == 5
+    end
+
+    test "supervises multiple named servers without manual child_spec" do
+      schema = make_schema()
+      s1 = start_supervised!({Server, schema: schema, name: :auth_doc_one})
+      s2 = start_supervised!({Server, schema: schema, name: :auth_doc_two})
+
+      assert Process.alive?(s1)
+      assert Process.alive?(s2)
+      assert s1 != s2
+    end
   end
 
   describe "receive_steps" do
@@ -325,6 +351,42 @@ defmodule ProsemirrorEx.Authority.ServerTest do
       assert {:error, :invalid_step, _msg} =
                Server.receive_steps(server, "client1", 0, [%{"invalid" => true}])
     end
+
+    test "validates version and batch size before deserializing step JSON" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      server = start_server(schema: schema, doc: doc_node, max_history: 1)
+
+      # Even with invalid step JSON, stale version returns :version_mismatch first
+      step_json = make_insert_step_json(schema, "!", 6)
+      {:ok, 1} = Server.receive_steps(server, "c1", 0, [step_json])
+
+      assert {:error, :version_mismatch} =
+               Server.receive_steps(server, "c2", 0, [%{"invalid" => true}])
+
+      # Non-integer version returns :invalid_version before deserialization
+      assert {:error, :invalid_version} =
+               Server.receive_steps(server, "c2", 1.0, [%{"invalid" => true}])
+
+      # Non-list steps returns :invalid_step before deserialization
+      assert {:error, :invalid_step, _} =
+               Server.receive_steps(server, "c2", 1, "not_a_list")
+
+      # Batch exceeding max_history returns :batch_too_large before deserialization
+      assert {:error, :batch_too_large} =
+               Server.receive_steps(server, "c2", 1, [%{"invalid" => true}, %{"invalid" => true}])
+    end
+
+    test "returns :step_failed when valid step JSON fails to apply" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      server = start_server(schema: schema, doc: doc_node)
+
+      bad_step_json = ReplaceStep.to_json(ReplaceStep.new(100, 200, Slice.empty()))
+
+      assert {:error, :step_failed, _msg} =
+               Server.receive_steps(server, "c1", 0, [bad_step_json])
+    end
   end
 
   describe "get_version" do
@@ -352,8 +414,7 @@ defmodule ProsemirrorEx.Authority.ServerTest do
       step_json = make_insert_step_json(schema, " world", 6)
       assert {:ok, 1} = Server.receive_steps(server, "clientA", 0, [step_json])
 
-      assert_receive {:authority_update,
-                      %{version: 1, steps: [step], client_ids: ["clientA"]}}
+      assert_receive {:authority_update, %{version: 1, steps: [step], client_ids: ["clientA"]}}
 
       assert step["stepType"] == "replace"
     end
@@ -404,19 +465,61 @@ defmodule ProsemirrorEx.Authority.ServerTest do
       assert_receive {:authority_update, %{version: 1}}
       refute_receive {:authority_update, _}, 50
     end
+
+    test "returns {:error, :invalid_subscriber} for non-pid without crashing server" do
+      schema = make_schema()
+      server = start_server(schema: schema)
+
+      assert {:error, :invalid_subscriber} = Server.subscribe(server, nil)
+      assert {:error, :invalid_subscriber} = Server.subscribe(server, :not_a_pid)
+      assert Process.alive?(server)
+      assert Server.get_version(server) == 0
+    end
+
+    test "cleans up subscriber when subscriber process exits (:DOWN)" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      server = start_server(schema: schema, doc: doc_node)
+
+      parent = self()
+
+      sub =
+        spawn(fn ->
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      assert :ok = Server.subscribe(server, sub)
+      assert :ok = Server.subscribe(server, parent)
+
+      ref = Process.monitor(sub)
+      send(sub, :stop)
+      assert_receive {:DOWN, ^ref, :process, ^sub, _}
+
+      # Give server a moment to process :DOWN, then send steps
+      step_json = make_insert_step_json(schema, "!", 6)
+      assert {:ok, 1} = Server.receive_steps(server, "c1", 0, [step_json])
+      assert_receive {:authority_update, %{version: 1}}
+      assert Process.alive?(server)
+    end
   end
 
   describe "max_history" do
-    test "returns history_unavailable when version was trimmed" do
+    test "returns history_unavailable when version was trimmed and tracks first_version" do
       schema = make_schema()
       {doc_node, _} = doc([p(["hello"])])
       server = start_server(schema: schema, doc: doc_node, max_history: 1)
 
+      assert Server.first_version(server) == 0
+
       step1 = make_insert_step_json(schema, " a", 6)
       {:ok, 1} = Server.receive_steps(server, "c1", 0, [step1])
+      assert Server.first_version(server) == 0
 
       step2 = make_insert_step_json(schema, " b", 8)
       {:ok, 2} = Server.receive_steps(server, "c2", 1, [step2])
+      assert Server.first_version(server) == 1
 
       assert {:error, :history_unavailable} = Server.steps_since(server, 0)
       assert {:ok, steps, ["c2"]} = Server.steps_since(server, 1)

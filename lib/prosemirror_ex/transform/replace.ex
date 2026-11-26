@@ -20,6 +20,14 @@ defmodule ProsemirrorEx.Transform.Replace do
     Transform
   }
 
+  @type transform_map :: %{
+          required(:doc) => Node.t(),
+          required(:steps) => [term()],
+          required(:docs) => [Node.t()],
+          required(:mapping) => ProsemirrorEx.Transform.Mapping.t(),
+          optional(atom()) => term()
+        }
+
   # ── Public API ──────────────────────────────────────────────────────
 
   @doc """
@@ -27,6 +35,8 @@ defmodule ProsemirrorEx.Transform.Replace do
   step that inserts it. Will return nil if there's no meaningful way
   to insert the slice here, or inserting it would be a no-op.
   """
+  @spec replace_step(Node.t(), integer(), integer() | nil, Slice.t() | nil) ::
+          ReplaceStep.t() | ReplaceAroundStep.t() | nil
   def replace_step(doc, from, to \\ nil, slice \\ nil) do
     to = to || from
     slice = slice || Slice.empty()
@@ -48,7 +58,8 @@ defmodule ProsemirrorEx.Transform.Replace do
   @doc """
   WYSIWYG-aware replace. Expands/contracts the range for best structural fit.
   """
-  def replace_range(tr, from, to, slice) do
+  @spec replace_range(transform_map(), integer(), integer(), Slice.t()) :: transform_map()
+  def replace_range(tr, from, to, %Slice{} = slice) do
     if Slice.size(slice) == 0 do
       Transform.delete_range(tr, from, to)
     else
@@ -66,27 +77,24 @@ defmodule ProsemirrorEx.Transform.Replace do
   @doc """
   WYSIWYG-aware single-node replacement.
   """
-  def replace_range_with(tr, from, to, node) do
-    if !Node.is_inline(node) and from == to and
-         Node.child_count(ResolvedPos.parent(Node.resolve(tr.doc, from))) > 0 do
-      point = insert_point(tr.doc, from, node.type)
+  @spec replace_range_with(transform_map(), integer(), integer(), Node.t()) :: transform_map()
+  def replace_range_with(tr, from, to, %Node{} = node) do
+    {from, to} =
+      if !Node.is_inline(node) and from == to and
+           Node.child_count(ResolvedPos.parent(Node.resolve(tr.doc, from))) > 0 do
+        point = insert_point(tr.doc, from, node.type)
+        if point != nil, do: {point, point}, else: {from, to}
+      else
+        {from, to}
+      end
 
-      {from, to} =
-        if point != nil do
-          {point, point}
-        else
-          {from, to}
-        end
-
-      replace_range(tr, from, to, Slice.new(Fragment.from(node), 0, 0))
-    else
-      replace_range(tr, from, to, Slice.new(Fragment.from(node), 0, 0))
-    end
+    replace_range(tr, from, to, Slice.new(Fragment.from(node), 0, 0))
   end
 
   @doc """
   Smart delete that expands to cover parent nodes when appropriate.
   """
+  @spec delete_range(transform_map(), integer(), integer()) :: transform_map()
   def delete_range(tr, from, to) do
     from_pos = Node.resolve(tr.doc, from)
     to_pos = Node.resolve(tr.doc, to)
@@ -98,7 +106,8 @@ defmodule ProsemirrorEx.Transform.Replace do
   Find a position at or around the given position where a node of the
   given type can be inserted. Returns nil when no position was found.
   """
-  def insert_point(doc, pos, node_type) do
+  @spec insert_point(Node.t(), integer(), NodeType.t()) :: non_neg_integer() | nil
+  def insert_point(doc, pos, %NodeType{} = node_type) do
     rpos = Node.resolve(doc, pos)
 
     if Node.can_replace_with(
@@ -114,14 +123,11 @@ defmodule ProsemirrorEx.Transform.Replace do
           find_insert_point_before(rpos, node_type)
         end
 
-      result =
-        if result == nil and rpos.parent_offset == ResolvedPos.parent(rpos).content.size do
-          find_insert_point_after(rpos, node_type) || result
-        else
-          result
-        end
-
-      result
+      if result == nil and rpos.parent_offset == ResolvedPos.parent(rpos).content.size do
+        find_insert_point_after(rpos, node_type)
+      else
+        result
+      end
     end
   end
 
@@ -180,10 +186,9 @@ defmodule ProsemirrorEx.Transform.Replace do
 
   # ── Fitter ─────────────────────────────────────────────────────────
   # The Fitter manages fitting a Slice into a document gap.
-  # We use a map to hold the mutable state and pass it through functions.
+  # Frontier is stored as a 0-indexed tuple for O(1) depth access and updates.
 
   defp fitter_new(from_pos, to_pos, unplaced) do
-    # Build frontier
     frontier =
       Enum.map(0..from_pos.depth, fn i ->
         node = ResolvedPos.node(from_pos, i)
@@ -193,8 +198,8 @@ defmodule ProsemirrorEx.Transform.Replace do
           match: Node.content_match_at(node, ResolvedPos.index_after(from_pos, i))
         }
       end)
+      |> List.to_tuple()
 
-    # Build initial placed
     placed =
       Enum.reduce(from_pos.depth..1//-1, Fragment.empty(), fn i, acc ->
         Fragment.from(Node.copy(ResolvedPos.node(from_pos, i), acc))
@@ -209,7 +214,7 @@ defmodule ProsemirrorEx.Transform.Replace do
     }
   end
 
-  defp fitter_depth(%{frontier: frontier}), do: length(frontier) - 1
+  defp fitter_depth(%{frontier: frontier}), do: tuple_size(frontier) - 1
 
   defp fitter_fit(from_pos, to_pos, slice) do
     state = fitter_new(from_pos, to_pos, slice)
@@ -229,9 +234,7 @@ defmodule ProsemirrorEx.Transform.Replace do
         Node.resolve(ResolvedPos.doc(from), move_inline)
       end
 
-    to_result = close(state, close_to)
-
-    case to_result do
+    case close(state, close_to) do
       nil ->
         nil
 
@@ -240,7 +243,6 @@ defmodule ProsemirrorEx.Transform.Replace do
         open_start = from.depth
         open_end = closed_to.depth
 
-        # Normalize by dropping open parent nodes
         {content, open_start, open_end} =
           normalize_open(content, open_start, open_end)
 
@@ -312,23 +314,19 @@ defmodule ProsemirrorEx.Transform.Replace do
   end
 
   defp compute_start_depth(state) do
-    start_depth = state.unplaced.open_start
-
     do_compute_start_depth(
       state.unplaced.content,
       0,
       state.unplaced.open_end,
-      start_depth,
-      start_depth
+      state.unplaced.open_start
     )
   end
 
-  defp do_compute_start_depth(_cur, d, _open_end, start_depth, _orig_start_depth)
-       when d >= start_depth do
+  defp do_compute_start_depth(_cur, d, _open_end, start_depth) when d >= start_depth do
     start_depth
   end
 
-  defp do_compute_start_depth(cur, d, open_end, start_depth, orig_start_depth) do
+  defp do_compute_start_depth(cur, d, open_end, start_depth) do
     node = Fragment.first_child(cur)
 
     open_end =
@@ -337,7 +335,7 @@ defmodule ProsemirrorEx.Transform.Replace do
     if Map.get(node.type.spec, "isolating", false) and open_end <= d do
       d
     else
-      do_compute_start_depth(node.content, d + 1, open_end, start_depth, orig_start_depth)
+      do_compute_start_depth(node.content, d + 1, open_end, start_depth)
     end
   end
 
@@ -399,7 +397,7 @@ defmodule ProsemirrorEx.Transform.Replace do
          parent,
          frontier_depth
        ) do
-    %{type: type, match: match} = Enum.at(state.frontier, frontier_depth)
+    %{type: type, match: match} = elem(state.frontier, frontier_depth)
 
     result =
       if pass == 1 do
@@ -545,10 +543,8 @@ defmodule ProsemirrorEx.Transform.Replace do
          inject: inject,
          wrap: wrap
        }) do
-    # Close frontier nodes down to frontier_depth
     state = close_frontier_to(state, frontier_depth)
 
-    # Open wrapping nodes
     state =
       if wrap do
         Enum.reduce(wrap, state, fn w, acc ->
@@ -562,47 +558,35 @@ defmodule ProsemirrorEx.Transform.Replace do
     fragment = if parent, do: parent.content, else: slice.content
     open_start = slice.open_start - slice_depth
 
-    %{match: match, type: type} = Enum.at(state.frontier, frontier_depth)
+    %{match: match, type: type} = elem(state.frontier, frontier_depth)
 
-    {add, match} =
+    {add_rev, match} =
       if inject do
-        inject_children =
-          Enum.map(0..(Fragment.child_count(inject) - 1), fn i ->
-            Fragment.child(inject, i)
-          end)
-
-        new_match = ContentMatch.match_fragment(match, inject)
-        {inject_children, new_match}
+        {Enum.reverse(inject.content), ContentMatch.match_fragment(match, inject)}
       else
         {[], match}
       end
 
-    # Computes the amount of (end) open nodes at the end of the fragment.
     open_end_count =
       fragment.size + slice_depth - (slice.content.size - slice.open_end)
 
-    # Scan over the fragment, fitting as many child nodes as possible.
-    {taken, add, match, _} =
-      take_fitting_children(fragment, match, type, open_start, open_end_count, add, 0)
+    {taken, add, match, to_end} =
+      take_fitting_children(fragment, match, type, open_start, open_end_count, add_rev)
 
-    to_end = taken == Fragment.child_count(fragment)
     open_end_count = if !to_end, do: -1, else: open_end_count
 
     state = %{state | placed: add_to_fragment(state.placed, frontier_depth, Fragment.from(add))}
     state = put_in_frontier_match(state, frontier_depth, match)
 
-    # If the parent types match, and the entire node was moved, and
-    # it's not open, close this frontier node right away.
     state =
       if to_end and open_end_count < 0 and parent != nil and
-           parent.type.name == Enum.at(state.frontier, fitter_depth(state)).type.name and
-           length(state.frontier) > 1 do
+           parent.type.name == elem(state.frontier, fitter_depth(state)).type.name and
+           tuple_size(state.frontier) > 1 do
         close_frontier_node(state)
       else
         state
       end
 
-    # Add new frontier nodes for any open nodes at the end.
     state =
       if open_end_count > 0 do
         add_open_end_frontier(state, fragment, open_end_count)
@@ -610,7 +594,6 @@ defmodule ProsemirrorEx.Transform.Replace do
         state
       end
 
-    # Update unplaced
     new_unplaced =
       if !to_end do
         Slice.new(
@@ -633,62 +616,79 @@ defmodule ProsemirrorEx.Transform.Replace do
     %{state | unplaced: new_unplaced}
   end
 
-  defp take_fitting_children(fragment, match, type, open_start, open_end_count, add, taken) do
-    if taken >= Fragment.child_count(fragment) do
-      {taken, add, match, open_end_count}
-    else
-      next = Fragment.child(fragment, taken)
+  defp take_fitting_children(fragment, match, type, open_start, open_end_count, add_rev) do
+    do_take_fitting_children(
+      fragment.content,
+      match,
+      type,
+      open_start,
+      open_end_count,
+      add_rev,
+      0
+    )
+  end
 
-      case ContentMatch.match_type(match, next.type) do
-        nil ->
-          {taken, add, match, open_end_count}
+  defp do_take_fitting_children([], match, _type, _open_start, _open_end_count, add_rev, taken) do
+    {taken, Enum.reverse(add_rev), match, true}
+  end
 
-        matches ->
-          new_taken = taken + 1
+  defp do_take_fitting_children(
+         [next | rest],
+         match,
+         type,
+         open_start,
+         open_end_count,
+         add_rev,
+         taken
+       ) do
+    case ContentMatch.match_type(match, next.type) do
+      nil ->
+        {taken, Enum.reverse(add_rev), match, false}
 
+      matches ->
+        new_taken = taken + 1
+
+        add_rev =
           if new_taken > 1 or open_start == 0 or next.content.size > 0 do
             closed =
               close_node_start(
                 Node.mark(next, NodeType.allowed_marks(type, next.marks || [])),
                 if(new_taken == 1, do: open_start, else: 0),
-                if(new_taken == Fragment.child_count(fragment), do: open_end_count, else: -1)
+                if(rest == [], do: open_end_count, else: -1)
               )
 
-            take_fitting_children(
-              fragment,
-              matches,
-              type,
-              open_start,
-              open_end_count,
-              add ++ [closed],
-              new_taken
-            )
+            [closed | add_rev]
           else
-            take_fitting_children(
-              fragment,
-              matches,
-              type,
-              open_start,
-              open_end_count,
-              add,
-              new_taken
-            )
+            add_rev
           end
-      end
+
+        do_take_fitting_children(
+          rest,
+          matches,
+          type,
+          open_start,
+          open_end_count,
+          add_rev,
+          new_taken
+        )
     end
   end
 
   defp add_open_end_frontier(state, fragment, open_end_count) do
-    Enum.reduce(1..open_end_count, {state, fragment}, fn _i, {st, cur} ->
-      node = Fragment.last_child(cur)
+    {next_state, _cur} =
+      Enum.reduce(1..open_end_count, {state, fragment}, fn _i, {st, cur} ->
+        node = Fragment.last_child(cur)
 
-      new_frontier =
-        st.frontier ++
-          [%{type: node.type, match: Node.content_match_at(node, Node.child_count(node))}]
+        new_entry = %{
+          type: node.type,
+          match: Node.content_match_at(node, Node.child_count(node))
+        }
 
-      {%{st | frontier: new_frontier}, node.content}
-    end)
-    |> elem(0)
+        {%{st | frontier: Tuple.insert_at(st.frontier, tuple_size(st.frontier), new_entry)},
+         node.content}
+      end)
+
+    next_state
   end
 
   # ── mustMoveInline ──────────────────────────────────────────────────
@@ -700,25 +700,21 @@ defmodule ProsemirrorEx.Transform.Replace do
       -1
     else
       depth = fitter_depth(state)
-      top = Enum.at(state.frontier, depth)
+      top = elem(state.frontier, depth)
 
-      if !top.type.is_textblock do
+      if !top.type.is_textblock or !content_after_fits(to, to.depth, top.type, top.match, false) do
         -1
       else
-        if !content_after_fits(to, to.depth, top.type, top.match, false) do
-          -1
-        else
-          if to.depth == depth do
-            level = find_close_level(state, to)
+        if to.depth == depth do
+          level = find_close_level(state, to)
 
-            if level && level.depth == depth do
-              -1
-            else
-              compute_move_inline_pos(to)
-            end
+          if level && level.depth == depth do
+            -1
           else
             compute_move_inline_pos(to)
           end
+        else
+          compute_move_inline_pos(to)
         end
       end
     end
@@ -747,35 +743,30 @@ defmodule ProsemirrorEx.Transform.Replace do
   defp find_close_level_loop(_state, _to, i) when i < 0, do: nil
 
   defp find_close_level_loop(state, to, i) do
-    %{match: match, type: type} = Enum.at(state.frontier, i)
+    %{match: match, type: type} = elem(state.frontier, i)
 
     drop_inner =
       i < to.depth and ResolvedPos.end_pos(to, i + 1) == to.pos + (to.depth - (i + 1))
 
     fit = content_after_fits(to, i, type, match, drop_inner)
 
-    if !fit do
-      find_close_level_loop(state, to, i - 1)
-    else
-      # Check that all frontier nodes below this level also close properly
-      if check_close_below(state, to, i) do
-        move =
-          if drop_inner do
-            Node.resolve(ResolvedPos.doc(to), ResolvedPos.after_pos(to, i + 1))
-          else
-            to
-          end
+    if fit && check_close_below(state, to, i) do
+      move =
+        if drop_inner do
+          Node.resolve(ResolvedPos.doc(to), ResolvedPos.after_pos(to, i + 1))
+        else
+          to
+        end
 
-        %{depth: i, fit: fit, move: move}
-      else
-        find_close_level_loop(state, to, i - 1)
-      end
+      %{depth: i, fit: fit, move: move}
+    else
+      find_close_level_loop(state, to, i - 1)
     end
   end
 
   defp check_close_below(state, to, i) do
     Enum.all?(0..(i - 1)//1, fn d ->
-      %{match: match, type: type} = Enum.at(state.frontier, d)
+      %{match: match, type: type} = elem(state.frontier, d)
       matches = content_after_fits(to, d, type, match, true)
       matches != nil and (matches == Fragment.empty() or Fragment.child_count(matches) == 0)
     end)
@@ -830,12 +821,8 @@ defmodule ProsemirrorEx.Transform.Replace do
 
   defp open_frontier_node(state, type, attrs \\ nil, content \\ nil) do
     depth = fitter_depth(state)
-    top = Enum.at(state.frontier, depth)
-
+    top = elem(state.frontier, depth)
     new_match = ContentMatch.match_type(top.match, type)
-
-    frontier =
-      List.replace_at(state.frontier, depth, %{top | match: new_match})
 
     placed =
       add_to_fragment(
@@ -845,19 +832,24 @@ defmodule ProsemirrorEx.Transform.Replace do
       )
 
     new_entry = %{type: type, match: type.content_match}
-    frontier = frontier ++ [new_entry]
+
+    frontier =
+      state.frontier
+      |> put_elem(depth, %{top | match: new_match})
+      |> Tuple.insert_at(depth + 1, new_entry)
 
     %{state | frontier: frontier, placed: placed}
   end
 
   defp close_frontier_node(state) do
-    open = List.last(state.frontier)
-    frontier = Enum.drop(state.frontier, -1)
+    last_idx = tuple_size(state.frontier) - 1
+    open = elem(state.frontier, last_idx)
+    frontier = Tuple.delete_at(state.frontier, last_idx)
     add = ContentMatch.fill_before(open.match, Fragment.empty(), true)
 
     placed =
       if add && Fragment.child_count(add) > 0 do
-        add_to_fragment(state.placed, length(frontier), add)
+        add_to_fragment(state.placed, last_idx, add)
       else
         state.placed
       end
@@ -867,17 +859,17 @@ defmodule ProsemirrorEx.Transform.Replace do
 
   defp close_frontier_to(state, target_depth) do
     if fitter_depth(state) > target_depth do
-      state = close_frontier_node(state)
-      close_frontier_to(state, target_depth)
+      state
+      |> close_frontier_node()
+      |> close_frontier_to(target_depth)
     else
       state
     end
   end
 
   defp put_in_frontier_match(state, index, match) do
-    entry = Enum.at(state.frontier, index)
-    frontier = List.replace_at(state.frontier, index, %{entry | match: match})
-    %{state | frontier: frontier}
+    entry = elem(state.frontier, index)
+    %{state | frontier: put_elem(state.frontier, index, %{entry | match: match})}
   end
 
   # ── Fragment helpers ────────────────────────────────────────────────
@@ -896,19 +888,17 @@ defmodule ProsemirrorEx.Transform.Replace do
     end
   end
 
-  defp add_to_fragment(fragment, depth, content) do
-    if depth == 0 do
-      Fragment.append(fragment, content)
-    else
-      last = Fragment.last_child(fragment)
+  defp add_to_fragment(fragment, 0, content), do: Fragment.append(fragment, content)
 
-      Fragment.replace_child(
-        fragment,
-        Fragment.child_count(fragment) - 1,
-        Node.copy(last, add_to_fragment(last.content, depth - 1, content))
-      )
-    end
+  defp add_to_fragment(%Fragment{content: children, size: size}, depth, content) do
+    {rev_prefix, last} = split_last(children, [])
+    updated_last = Node.copy(last, add_to_fragment(last.content, depth - 1, content))
+    new_size = size - Node.node_size(last) + Node.node_size(updated_last)
+    Fragment.new(:lists.reverse(rev_prefix, [updated_last]), new_size)
   end
+
+  defp split_last([last], rev_prefix), do: {rev_prefix, last}
+  defp split_last([head | rest], rev_prefix), do: split_last(rest, [head | rev_prefix])
 
   defp content_at(fragment, depth) do
     if depth <= 0 do
@@ -940,23 +930,19 @@ defmodule ProsemirrorEx.Transform.Replace do
           frag
         end
 
-      if open_start > 0 do
-        fill = ContentMatch.fill_before(node.type.content_match, frag)
-        frag = Fragment.append(fill, frag)
+      fill = ContentMatch.fill_before(node.type.content_match, frag)
+      frag = Fragment.append(fill, frag)
 
-        frag =
-          if open_end <= 0 do
-            matched = ContentMatch.match_fragment(node.type.content_match, frag)
-            after_fill = ContentMatch.fill_before(matched, Fragment.empty(), true)
-            Fragment.append(frag, after_fill)
-          else
-            frag
-          end
+      frag =
+        if open_end <= 0 do
+          matched = ContentMatch.match_fragment(node.type.content_match, frag)
+          after_fill = ContentMatch.fill_before(matched, Fragment.empty(), true)
+          Fragment.append(frag, after_fill)
+        else
+          frag
+        end
 
-        Node.copy(node, frag)
-      else
-        Node.copy(node, frag)
-      end
+      Node.copy(node, frag)
     end
   end
 
@@ -978,9 +964,9 @@ defmodule ProsemirrorEx.Transform.Replace do
   end
 
   defp invalid_marks(type, fragment, start) do
-    Enum.any?(start..(Fragment.child_count(fragment) - 1)//1, fn i ->
-      !NodeType.allows_marks(type, Fragment.child(fragment, i).marks || [])
-    end)
+    fragment.content
+    |> Enum.drop(start)
+    |> Enum.any?(fn child -> !NodeType.allows_marks(type, child.marks || []) end)
   end
 
   # ── replaceRange implementation ─────────────────────────────────────
@@ -988,7 +974,6 @@ defmodule ProsemirrorEx.Transform.Replace do
   defp do_replace_range(tr, from, to, from_pos, to_pos, slice) do
     target_depths = covered_depths(from_pos, to_pos)
 
-    # Can't replace the whole document, so remove 0 if it's present at end
     target_depths =
       if List.last(target_depths) == 0 do
         Enum.drop(target_depths, -1)
@@ -996,54 +981,46 @@ defmodule ProsemirrorEx.Transform.Replace do
         target_depths
       end
 
-    # Negative numbers represent not expansion over the whole node at
-    # that depth, but replacing from $from.before(-D) to $to.pos.
     preferred_target = -(from_pos.depth + 1)
     target_depths = [preferred_target | target_depths]
 
-    # This loop picks a preferred target depth
     {target_depths, preferred_target} =
       compute_preferred_target(from_pos, target_depths, preferred_target)
 
     preferred_target_index = find_index(target_depths, preferred_target)
 
-    # Build left nodes
-    {left_nodes, _} =
+    {left_nodes_rev, _} =
       Enum.reduce(0..slice.open_start, {[], slice.content}, fn i, {nodes, content} ->
         node = Fragment.first_child(content)
-        nodes = nodes ++ [node]
+        next_nodes = [node | nodes]
 
         if i == slice.open_start do
-          {nodes, content}
+          {next_nodes, content}
         else
-          {nodes, node.content}
+          {next_nodes, node.content}
         end
       end)
 
-    # Back up preferredDepth to cover defining textblocks
+    left_nodes = Enum.reverse(left_nodes_rev)
+
     preferred_depth =
       compute_preferred_depth(left_nodes, from_pos, preferred_target, slice.open_start)
 
-    # Try each openDepth / targetDepth combination
-    result =
-      try_replace_range_fits(
-        tr,
-        from_pos,
-        to_pos,
-        slice,
-        left_nodes,
-        target_depths,
-        preferred_target_index,
-        preferred_depth,
-        to
-      )
-
-    case result do
+    case try_replace_range_fits(
+           tr,
+           from_pos,
+           to_pos,
+           slice,
+           left_nodes,
+           target_depths,
+           preferred_target_index,
+           preferred_depth,
+           to
+         ) do
       {:ok, tr} ->
         tr
 
       :not_found ->
-        # Fallback: try expanding from/to
         fallback_replace_range(tr, from, to, slice, target_depths, from_pos, to_pos)
     end
   end
@@ -1052,34 +1029,32 @@ defmodule ProsemirrorEx.Transform.Replace do
     if from_pos.depth < 1 do
       {target_depths, preferred_target}
     else
-      Enum.reduce_while(
-        from_pos.depth..1//-1,
-        {target_depths, preferred_target, from_pos.pos - 1},
-        fn d, {tds, pt, pos} ->
-          spec = ResolvedPos.node(from_pos, d).type.spec
+      {tds, pt, _pos} =
+        Enum.reduce_while(
+          from_pos.depth..1//-1,
+          {target_depths, preferred_target, from_pos.pos - 1},
+          fn d, {tds, pt, pos} ->
+            spec = ResolvedPos.node(from_pos, d).type.spec
 
-          if Map.get(spec, "defining", false) or Map.get(spec, "definingAsContext", false) or
-               Map.get(spec, "isolating", false) do
-            {:halt, {tds, pt, pos}}
-          else
-            new_pt =
-              if Enum.member?(tds, d), do: d, else: pt
+            if Map.get(spec, "defining", false) or Map.get(spec, "definingAsContext", false) or
+                 Map.get(spec, "isolating", false) do
+              {:halt, {tds, pt, pos}}
+            else
+              new_pt = if Enum.member?(tds, d), do: d, else: pt
 
-            new_tds =
-              if ResolvedPos.before(from_pos, d) == pos do
-                # Add negative depth after preferred_target
-                List.insert_at(tds, 1, -d)
-              else
-                tds
-              end
+              new_tds =
+                if ResolvedPos.before(from_pos, d) == pos do
+                  List.insert_at(tds, 1, -d)
+                else
+                  tds
+                end
 
-            {:cont, {new_tds, new_pt, pos - 1}}
+              {:cont, {new_tds, new_pt, pos - 1}}
+            end
           end
-        end
-      )
-      |> case do
-        {tds, pt, _pos} -> {tds, pt}
-      end
+        )
+
+      {tds, pt}
     end
   end
 
@@ -1126,9 +1101,7 @@ defmodule ProsemirrorEx.Transform.Replace do
             idx = rem(i + preferred_target_index, num_depths)
             raw_depth = Enum.at(target_depths, idx)
             expand = raw_depth >= 0
-
-            target_depth =
-              if raw_depth < 0, do: -raw_depth, else: raw_depth
+            target_depth = abs(raw_depth)
 
             parent = ResolvedPos.node(from_pos, target_depth - 1)
             index = ResolvedPos.index(from_pos, target_depth - 1)
@@ -1165,7 +1138,9 @@ defmodule ProsemirrorEx.Transform.Replace do
   defp fallback_replace_range(tr, from, to, slice, target_depths, from_pos, to_pos) do
     start_steps = length(tr.steps)
 
-    Enum.reduce_while(Enum.reverse(target_depths), {tr, from, to}, fn depth, {t, f, tt} ->
+    target_depths
+    |> Enum.reverse()
+    |> Enum.reduce_while({tr, from, to}, fn depth, {t, f, tt} ->
       t = Transform.replace(t, f, tt, slice)
 
       if length(t.steps) > start_steps do
@@ -1210,7 +1185,6 @@ defmodule ProsemirrorEx.Transform.Replace do
 
   defp do_delete_range(tr, from, to, from_pos, to_pos, covered, i) do
     if i >= length(covered) do
-      # Last fallback - d loop
       do_delete_range_fallback(tr, from, to, from_pos, to_pos)
     else
       depth = Enum.at(covered, i)
@@ -1271,7 +1245,7 @@ defmodule ProsemirrorEx.Transform.Replace do
 
   defp covered_depths(from_pos, to_pos) do
     min_depth = min(from_pos.depth, to_pos.depth)
-    covered_depths_loop(from_pos, to_pos, min_depth, [])
+    covered_depths_loop(from_pos, to_pos, min_depth, []) |> Enum.reverse()
   end
 
   defp covered_depths_loop(_from_pos, _to_pos, d, result) when d < 0, do: result
@@ -1293,11 +1267,8 @@ defmodule ProsemirrorEx.Transform.Replace do
              d > 0 and
              ResolvedPos.start(to_pos, d - 1) == start - 1)
 
-      if should_add do
-        covered_depths_loop(from_pos, to_pos, d - 1, result ++ [d])
-      else
-        covered_depths_loop(from_pos, to_pos, d - 1, result)
-      end
+      next_result = if should_add, do: [d | result], else: result
+      covered_depths_loop(from_pos, to_pos, d - 1, next_result)
     end
   end
 
