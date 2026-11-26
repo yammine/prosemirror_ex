@@ -386,25 +386,70 @@ defmodule ProsemirrorEx.Transform.StepJsonTest do
   # ── DocAttrStep JSON round-trip tests ────────────────────────────────
 
   describe "DocAttrStep JSON round-trip" do
+    defp doc_attr_schema do
+      Schema.new(%{
+        "nodes" => [
+          {"doc",
+           %{
+             "content" => "block+",
+             "attrs" => %{
+               "title" => %{"default" => nil},
+               "version" => %{"default" => 1},
+               "metadata" => %{"default" => %{"a" => 1}}
+             }
+           }},
+          {"paragraph", %{"content" => "inline*", "group" => "block"}},
+          {"text", %{"group" => "inline"}}
+        ],
+        "marks" => []
+      })
+    end
+
+    defp doc_with_attrs(schema) do
+      p_type = Schema.node_type(schema, "paragraph")
+      text = Schema.text(schema, "hello")
+      p_node = ProsemirrorEx.Model.NodeType.create(p_type, nil, Fragment.from(text), nil)
+      doc_type = Schema.node_type(schema, "doc")
+      ProsemirrorEx.Model.NodeType.create(doc_type, nil, Fragment.from(p_node), nil)
+    end
+
     test "set doc attribute" do
-      {doc_node, _tags} = doc([p(["hello"])])
+      schema = doc_attr_schema()
+      doc_node = doc_with_attrs(schema)
       step = DocAttrStep.new("title", "My Document")
 
-      test_step_json(doc_node, step)
+      result = DocAttrStep.apply(step, doc_node)
+      assert result.failed == nil
+      assert result.doc.attrs["title"] == "My Document"
+
+      recovered = Step.from_json(schema, DocAttrStep.to_json(step))
+      assert Node.eq(DocAttrStep.apply(recovered, doc_node).doc, result.doc)
     end
 
     test "set doc attribute to number" do
-      {doc_node, _tags} = doc([p(["hello"])])
+      schema = doc_attr_schema()
+      doc_node = doc_with_attrs(schema)
       step = DocAttrStep.new("version", 42)
 
-      test_step_json(doc_node, step)
+      result = DocAttrStep.apply(step, doc_node)
+      assert result.failed == nil
+      assert result.doc.attrs["version"] == 42
+
+      recovered = Step.from_json(schema, DocAttrStep.to_json(step))
+      assert Node.eq(DocAttrStep.apply(recovered, doc_node).doc, result.doc)
     end
 
     test "set doc attribute to nil" do
-      {doc_node, _tags} = doc([p(["hello"])])
+      schema = doc_attr_schema()
+      doc_node = doc_with_attrs(schema)
       step = DocAttrStep.new("metadata", nil)
 
-      test_step_json(doc_node, step)
+      result = DocAttrStep.apply(step, doc_node)
+      assert result.failed == nil
+      assert result.doc.attrs["metadata"] == nil
+
+      recovered = Step.from_json(schema, DocAttrStep.to_json(step))
+      assert Node.eq(DocAttrStep.apply(recovered, doc_node).doc, result.doc)
     end
 
     test "JSON has correct stepType and fields" do
@@ -684,6 +729,180 @@ defmodule ProsemirrorEx.Transform.StepJsonTest do
     test "DocAttrStep.from_json raises for missing attr" do
       assert_raise ArgumentError, fn ->
         DocAttrStep.from_json(test_schema(), %{"stepType" => "docAttr"})
+      end
+    end
+
+    test "Step.from_json rejects non-map and non-string stepType without crashing" do
+      schema = test_schema()
+
+      for bad <- [nil, 123, "replace", [], ReplaceStep.new(0, 0, Slice.empty())] do
+        assert_raise ArgumentError, fn ->
+          Step.from_json(schema, bad)
+        end
+      end
+
+      for bad_type <- [nil, 123, true, %{}, ["replace"]] do
+        assert_raise ArgumentError, fn ->
+          Step.from_json(schema, %{"stepType" => bad_type})
+        end
+      end
+    end
+
+    test "ReplaceStep.from_json rejects floats, negatives, inverted range, invalid structure, and bad slice" do
+      schema = test_schema()
+
+      bad_payloads = [
+        nil,
+        "replace",
+        ReplaceStep.new(1, 2, Slice.empty()),
+        %{"stepType" => "replace", "from" => 1.5, "to" => 2},
+        %{"stepType" => "replace", "from" => -1, "to" => 2},
+        %{"stepType" => "replace", "from" => 5, "to" => 2},
+        %{"stepType" => "replace", "from" => 1, "to" => 2, "structure" => "false"},
+        %{"stepType" => "replace", "from" => 1, "to" => 2, "structure" => 1},
+        %{"stepType" => "replace", "from" => 1, "to" => 2, "slice" => "bad"},
+        %{"stepType" => "replace", "from" => 1, "to" => 2, "slice" => %{"content" => "bad"}},
+        %{
+          "stepType" => "replace",
+          "from" => 1,
+          "to" => 2,
+          "slice" => %{"content" => [%{"type" => "nonexistent"}]}
+        },
+        %{
+          "stepType" => "replace",
+          "from" => 1,
+          "to" => 2,
+          "slice" => %{"content" => [%{"type" => "paragraph"}], "openStart" => 99}
+        }
+      ]
+
+      for json <- bad_payloads do
+        assert_raise ArgumentError, fn ->
+          ReplaceStep.from_json(schema, json)
+        end
+      end
+    end
+
+    test "ReplaceAroundStep.from_json rejects bad ranges, insert bounds, structure, and bad slice" do
+      schema = test_schema()
+      valid_slice = %{"content" => [%{"type" => "blockquote"}]}
+
+      bad_payloads = [
+        nil,
+        %{
+          "stepType" => "replaceAround",
+          "from" => 0,
+          "to" => 5,
+          "gapFrom" => 3,
+          "gapTo" => 2,
+          "insert" => 0
+        },
+        %{
+          "stepType" => "replaceAround",
+          "from" => 3,
+          "to" => 5,
+          "gapFrom" => 2,
+          "gapTo" => 4,
+          "insert" => 0
+        },
+        %{
+          "stepType" => "replaceAround",
+          "from" => 0,
+          "to" => 4,
+          "gapFrom" => 1,
+          "gapTo" => 5,
+          "insert" => 0
+        },
+        %{
+          "stepType" => "replaceAround",
+          "from" => 0,
+          "to" => 5,
+          "gapFrom" => 1,
+          "gapTo" => 4,
+          "insert" => -1,
+          "slice" => valid_slice
+        },
+        %{
+          "stepType" => "replaceAround",
+          "from" => 0,
+          "to" => 5,
+          "gapFrom" => 1,
+          "gapTo" => 4,
+          "insert" => 99,
+          "slice" => valid_slice
+        },
+        %{
+          "stepType" => "replaceAround",
+          "from" => 0,
+          "to" => 5,
+          "gapFrom" => 1,
+          "gapTo" => 4,
+          "insert" => 0,
+          "structure" => "yes"
+        }
+      ]
+
+      for json <- bad_payloads do
+        assert_raise ArgumentError, fn ->
+          ReplaceAroundStep.from_json(schema, json)
+        end
+      end
+    end
+
+    test "mark steps from_json reject bad positions, inverted ranges, and invalid marks" do
+      schema = test_schema()
+      valid_mark = %{"type" => "em"}
+
+      for mod <- [AddMarkStep, RemoveMarkStep] do
+        for json <- [
+              nil,
+              %{"from" => -1, "to" => 2, "mark" => valid_mark},
+              %{"from" => 1.5, "to" => 2, "mark" => valid_mark},
+              %{"from" => 5, "to" => 2, "mark" => valid_mark},
+              %{"from" => 1, "to" => 2, "mark" => nil},
+              %{"from" => 1, "to" => 2, "mark" => "em"},
+              %{"from" => 1, "to" => 2, "mark" => %{"type" => "unknown_mark"}},
+              %{"from" => 1, "to" => 2, "mark" => %{"type" => "link", "attrs" => %{"bad" => 1}}}
+            ] do
+          assert_raise ArgumentError, fn ->
+            mod.from_json(schema, json)
+          end
+        end
+      end
+
+      for mod <- [AddNodeMarkStep, RemoveNodeMarkStep] do
+        for json <- [
+              nil,
+              %{"pos" => -1, "mark" => valid_mark},
+              %{"pos" => 1.5, "mark" => valid_mark},
+              %{"pos" => 1, "mark" => nil},
+              %{"pos" => 1, "mark" => %{"type" => "unknown_mark"}}
+            ] do
+          assert_raise ArgumentError, fn ->
+            mod.from_json(schema, json)
+          end
+        end
+      end
+    end
+
+    test "AttrStep and DocAttrStep from_json reject malformed pos and attr" do
+      schema = test_schema()
+
+      for json <- [
+            nil,
+            %{"pos" => -1, "attr" => "level", "value" => 2},
+            %{"pos" => 1.2, "attr" => "level", "value" => 2},
+            %{"pos" => 0, "attr" => 123, "value" => 2}
+          ] do
+        assert_raise ArgumentError, fn ->
+          AttrStep.from_json(schema, json)
+        end
+      end
+
+      for json <- [nil, %{"attr" => nil}, %{"attr" => 123}, %{"attr" => %{}}] do
+        assert_raise ArgumentError, fn ->
+          DocAttrStep.from_json(schema, json)
+        end
       end
     end
   end

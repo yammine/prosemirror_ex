@@ -21,15 +21,19 @@ defmodule ProsemirrorEx.Transform.MapResult do
         }
 
   @doc "Bitmask constant for deletion before."
+  @spec del_before() :: non_neg_integer()
   def del_before, do: @del_before
 
   @doc "Bitmask constant for deletion after."
+  @spec del_after() :: non_neg_integer()
   def del_after, do: @del_after
 
   @doc "Bitmask constant for deletion across."
+  @spec del_across() :: non_neg_integer()
   def del_across, do: @del_across
 
   @doc "Bitmask constant for deletion on the queried side."
+  @spec del_side() :: non_neg_integer()
   def del_side, do: @del_side
 
   @doc """
