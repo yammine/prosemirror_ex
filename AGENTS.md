@@ -4,7 +4,7 @@ Elixir port of the ProseMirror rich text editor framework (document model + tran
 
 ## Architecture
 
-Two subsystems, mirroring the JS ProseMirror package split:
+Two core subsystems, mirroring the JS ProseMirror package split, plus convenience schema builders and a collaborative editing authority:
 
 ### ProsemirrorEx.Model (prosemirror-model port)
 
@@ -27,6 +27,8 @@ The immutable document model. All types are structs. Documents are trees of `Nod
 | `Model.CompareDeep` | Deep equality for plain maps/lists | Attribute comparison |
 | `Model.Diff` | Fragment diff detection | Finding where two fragments diverge |
 | `Model.NodeRange` | Block range within a parent | Structural operations (lift, wrap) |
+| `Model.Utf16` | UTF-16 code-unit length, slicing, byte offset conversion | Text offsets matching JS String semantics |
+| `Model.RangeError` | Out-of-bounds position exception | Position resolution & fragment bounds errors |
 
 ### ProsemirrorEx.Transform (prosemirror-transform port)
 
@@ -38,6 +40,7 @@ Document transformation via invertible, mappable steps. Each step produces a new
 |--------|---------|-------------------|
 | `Transform.Transform` | Main orchestrator, accumulates steps | All document mutations, chaining operations |
 | `Transform.Step` | Step behaviour + JSON registry | Defining new step types, step deserialization |
+| `Transform.StepRegistry` | Lazy built-in step registration | Ensuring built-in step JSON IDs are loaded |
 | `Transform.StepResult` | Step application result (ok/fail) | Handling step outcomes |
 | `Transform.StepMap` | Position change triples from one step | Understanding how positions shift |
 | `Transform.Mapping` | Chains StepMaps with mirror recovery | Collaborative editing, rebasing, undo |
@@ -61,47 +64,57 @@ DX helpers for composing common ProseMirror schemas without hand-writing full sp
 ## File Layout
 
 ```
-lib/prosemirror_ex/
-├── schema/                   # Convenience schema builders
-│   ├── basic.ex              # Basic prose node/mark specs + schema/0
-│   └── list.ex               # add_list_nodes/2-3
-├── model/                    # Document model (prosemirror-model port)
-│   ├── schema.ex             # Schema construction + factories
-│   ├── node.ex               # Node struct + operations
-│   ├── fragment.ex           # Fragment (child collection)
-│   ├── mark.ex               # Mark struct + set operations
-│   ├── node_type.ex          # NodeType + create/validate
-│   ├── mark_type.ex          # MarkType + create/exclude
-│   ├── content_match.ex      # DFA content expression engine
-│   ├── resolved_pos.ex       # Position resolution
-│   ├── slice.ex              # Document slices
-│   ├── replace.ex            # Replace algorithm
-│   ├── diff.ex               # Fragment diffing
-│   ├── node_range.ex         # Block range
-│   ├── compare_deep.ex       # Deep equality util
-│   ├── replace_error.ex      # ReplaceError exception
-│   └── protocols.ex          # Inspect, String.Chars, Jason.Encoder
-└── transform/                # Document transforms (prosemirror-transform port)
-    ├── transform.ex          # Transform struct + all convenience methods
-    ├── step.ex               # Step behaviour + registry (persistent_term)
-    ├── step_result.ex        # StepResult struct
-    ├── step_map.ex           # StepMap (position triples)
-    ├── mapping.ex            # Mapping (chained maps + mirror)
-    ├── mappable.ex           # Mappable protocol
-    ├── map_result.ex         # MapResult struct
-    ├── replace_step.ex       # ReplaceStep + ReplaceAroundStep
-    ├── mark_step.ex          # AddMarkStep, RemoveMarkStep, AddNodeMarkStep, RemoveNodeMarkStep
-    ├── attr_step.ex          # AttrStep, DocAttrStep
-    ├── replace.ex            # Fitter algorithm + replaceRange/deleteRange
-    ├── structure.ex          # lift, wrap, split, join, setBlockType, etc.
-    ├── mark.ex               # addMark, removeMark, clearIncompatible
-    └── transform_error.ex    # TransformError exception
+lib/
+├── prosemirror_ex.ex             # Top-level library @moduledoc
+└── prosemirror_ex/
+    ├── authority.ex              # Pure functional collaborative authority
+    ├── authority/
+    │   └── server.ex             # GenServer + JSON boundary + subscriptions
+    ├── model.ex                  # Model namespace @moduledoc
+    ├── model/                    # Document model (prosemirror-model port)
+    │   ├── compare_deep.ex       # Deep equality util
+    │   ├── content_match.ex      # DFA content expression engine
+    │   ├── diff.ex               # Fragment diffing
+    │   ├── fragment.ex           # Fragment (child collection)
+    │   ├── mark.ex               # Mark struct + set operations
+    │   ├── mark_type.ex          # MarkType + create/exclude
+    │   ├── node.ex               # Node struct + operations
+    │   ├── node_range.ex         # Block range
+    │   ├── node_type.ex          # NodeType + create/validate
+    │   ├── protocols.ex          # Inspect, String.Chars, Jason.Encoder
+    │   ├── range_error.ex        # RangeError exception
+    │   ├── replace.ex            # Replace algorithm
+    │   ├── replace_error.ex      # ReplaceError exception
+    │   ├── resolved_pos.ex       # Position resolution
+    │   ├── schema.ex             # Schema construction + factories
+    │   ├── slice.ex              # Document slices
+    │   └── utf16.ex              # UTF-16 code-unit helpers
+    ├── schema.ex                 # Schema namespace @moduledoc
+    ├── schema/                   # Convenience schema builders
+    │   ├── basic.ex              # Basic prose node/mark specs + schema/0
+    │   └── list.ex               # add_list_nodes/2-3
+    └── transform/                # Document transforms (prosemirror-transform port)
+        ├── attr_step.ex          # AttrStep, DocAttrStep
+        ├── map_result.ex         # MapResult struct
+        ├── mappable.ex           # Mappable protocol
+        ├── mapping.ex            # Mapping (chained maps + mirror)
+        ├── mark.ex               # addMark, removeMark, clearIncompatible
+        ├── mark_step.ex          # AddMarkStep, RemoveMarkStep, AddNodeMarkStep, RemoveNodeMarkStep
+        ├── replace.ex            # Fitter algorithm + replaceRange/deleteRange
+        ├── replace_step.ex       # ReplaceStep + ReplaceAroundStep
+        ├── step.ex               # Step behaviour + registry (persistent_term)
+        ├── step_map.ex           # StepMap (position triples)
+        ├── step_registry.ex      # Lazy built-in step registration
+        ├── step_result.ex        # StepResult struct
+        ├── structure.ex          # lift, wrap, split, join, setBlockType, etc.
+        ├── transform.ex          # Transform struct + all convenience methods
+        └── transform_error.ex    # TransformError exception
 ```
 
 ## Key Concepts
 
 ### Position Model
-ProseMirror uses a flat integer position scheme. Non-leaf nodes contribute an opening and closing token (each = 1 position). Text nodes are counted by character length. Position 0 is before the first child of the root.
+ProseMirror uses a flat integer position scheme. Non-leaf nodes contribute an opening and closing token (each = 1 position). Text nodes are counted in UTF-16 code units (via `ProsemirrorEx.Model.Utf16`) to match JavaScript string indexing. Position 0 is before the first child of the root.
 
 ### Content Expressions
 Schema node specs use content expressions like `"paragraph+"`, `"inline*"`, `"heading block*"`. These compile to a DFA via `ContentMatch.parse/2`. The DFA validates whether a sequence of child node types is valid.
@@ -110,14 +123,16 @@ Schema node specs use content expressions like `"paragraph+"`, `"inline*"`, `"he
 All document mutations happen through `Step` structs. Each step is invertible (for undo), mappable (for collaborative editing), and serializable (for persistence/networking). The `Transform` struct accumulates steps and maintains a `Mapping` for position tracking.
 
 ### Wire Format
-JSON serialization is byte-for-byte compatible with the JS ProseMirror libraries. Documents serialize via `Node.to_json/1` / `Node.from_json/2`. Steps serialize via `step.to_json()` / `Step.from_json/2` with a `"stepType"` discriminator field.
+JSON serialization is byte-for-byte compatible with the JS ProseMirror libraries. Documents serialize via `Node.to_json/1` / `Node.from_json/2`. Steps serialize via `step.__struct__.to_json(step)` / `Step.from_json/2` with a `"stepType"` discriminator field.
 
 ## Testing
 
 ```bash
-mix test                    # Run all 1112 tests
-mix test test/prosemirror_ex/model/     # Model tests only (518)
-mix test test/prosemirror_ex/transform/ # Transform tests only (594)
+mix test                                # Run full test suite (unit + StreamData property tests)
+mix test test/prosemirror_ex/model/     # Model tests
+mix test test/prosemirror_ex/transform/ # Transform tests
+mix test test/prosemirror_ex/authority* # Authority & Authority.Server tests
+mix test test/prosemirror_ex/schema/    # Schema convenience builder tests
 ```
 
 ### Test Helpers
@@ -131,9 +146,7 @@ mix test test/prosemirror_ex/transform/ # Transform tests only (594)
 ### JSON Fixtures
 `test/fixtures/*.json` — real ProseMirror document JSON for round-trip testing.
 
-## Reference Material
-
-`reference/prosemirror-transform/` contains the original TypeScript source from prosemirror-transform for cross-referencing.
+## Design Specs & Plans
 
 Design specs and implementation plans are in `docs/superpowers/specs/` and `docs/superpowers/plans/`.
 
@@ -183,16 +196,16 @@ Collaborative editing central authority (server-side counterpart to `prosemirror
 
 | Module | Purpose |
 |--------|---------|
-| `Authority` | Pure functional core: version, receive_steps, steps_since, optional `max_history` |
-| `Authority.Server` | GenServer + JSON boundary + `subscribe` (`onNewSteps` equivalent) |
+| `Authority` | Pure functional core: version, receive_steps, steps_since, first_version, optional `max_history` and initial `:version` |
+| `Authority.Server` | GenServer + JSON boundary (JSON `:doc`/`:doc_json` init, pre-deserialization validation) + `subscribe` (`onNewSteps` equivalent) |
 
 **Suite note:** An authority only needs `prosemirror-model` + `prosemirror-transform` (ported). Packages like `prosemirror-state`, `prosemirror-view`, `prosemirror-collab`, commands/keymap/history are client-side and intentionally not ported.
 
 ## Design Decisions
 
 - **TextNode as Node with non-nil `:text`** — no separate struct, pattern match on `:text` field
-- **ContentMatch uses ETS** — DFA states reference each other cyclically; ETS handles this naturally
-- **Step registry via `:persistent_term`** — global, cross-process, registered on module load via `@on_load`
+- **ContentMatch uses pure immutable maps** — DFA states are stored in an immutable `:states` map by state ID (no ETS tables)
+- **Step registry via `:persistent_term`** — global, cross-process, registered lazily via `StepRegistry.ensure_registered/0` (and in `test/test_helper.exs`)
 - **Transform extensibility** — functions pattern match on map keys (`%{doc: _, steps: _, ...}`) not `%Transform{}`, so `Transaction` can extend it
 - **Mappable as protocol** — both StepMap and Mapping implement it; third-party types can too
 - **Authority history trim** — `max_history` mirrors the official collab demo; trimmed versions return `:history_unavailable`

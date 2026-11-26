@@ -36,25 +36,22 @@ defmodule CollabDemo.DocServer do
   end
 
   def handle_call({:receive_steps, client_id, version, steps_json}, _from, state) do
-    steps =
-      Enum.map(steps_json, &ProsemirrorEx.Transform.Step.from_json(state.schema, &1))
+    with :ok <- validate_receive_args(state.auth, version, steps_json),
+         {:ok, steps} <- deserialize_steps(state.schema, steps_json),
+         {:ok, new_auth} <- Authority.receive_steps(state.auth, client_id, version, steps) do
+      {:ok, new_steps, client_ids} = Authority.steps_since(new_auth, version)
+      steps_out = Enum.map(new_steps, & &1.__struct__.to_json(&1))
 
-    case Authority.receive_steps(state.auth, client_id, version, steps) do
-      {:ok, new_auth} ->
-        {:ok, new_steps, client_ids} = Authority.steps_since(new_auth, version)
-        steps_out = Enum.map(new_steps, &(&1.__struct__.to_json(&1)))
+      Phoenix.PubSub.broadcast(
+        CollabDemo.PubSub,
+        "collab:doc",
+        {:new_steps, %{version: new_auth.version, steps: steps_out, client_ids: client_ids}}
+      )
 
-        Phoenix.PubSub.broadcast(
-          CollabDemo.PubSub,
-          "collab:doc",
-          {:new_steps,
-           %{version: new_auth.version, steps: steps_out, client_ids: client_ids}}
-        )
-
-        {:reply, {:ok, new_auth.version}, %{state | auth: new_auth}}
-
-      {:error, :version_mismatch} ->
-        {:reply, {:error, :version_mismatch}, state}
+      {:reply, {:ok, new_auth.version}, %{state | auth: new_auth}}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+      {:error, reason, message} -> {:reply, {:error, reason, message}, state}
     end
   end
 
@@ -62,12 +59,38 @@ defmodule CollabDemo.DocServer do
     case Authority.steps_since(state.auth, version) do
       {:ok, steps, client_ids} ->
         {:reply,
-         {:ok, Enum.map(steps, &(&1.__struct__.to_json(&1))), client_ids, state.auth.version},
+         {:ok, Enum.map(steps, & &1.__struct__.to_json(&1)), client_ids, state.auth.version},
          state}
 
       error ->
         {:reply, error, state}
     end
+  end
+
+  defp validate_receive_args(auth, version, steps_json) do
+    cond do
+      not is_integer(version) ->
+        {:error, :invalid_version}
+
+      version != auth.version ->
+        {:error, :version_mismatch}
+
+      not is_list(steps_json) ->
+        {:error, :invalid_step, "steps must be a list"}
+
+      is_integer(auth.max_history) and length(steps_json) > auth.max_history ->
+        {:error, :batch_too_large}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp deserialize_steps(schema, steps_json) do
+    steps = Enum.map(steps_json, &ProsemirrorEx.Transform.Step.from_json(schema, &1))
+    {:ok, steps}
+  rescue
+    e -> {:error, :invalid_step, Exception.message(e)}
   end
 
   defp build_schema do

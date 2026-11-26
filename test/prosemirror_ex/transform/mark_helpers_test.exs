@@ -328,5 +328,169 @@ defmodule ProsemirrorEx.Transform.MarkHelpersTest do
       first_child = Node.first_child(tr.doc)
       assert length(first_child.marks) == 0
     end
+
+    test "raises ArgumentError on unexpected mark value" do
+      {doc_node, _} = doc([p([em(["hello"])])])
+
+      assert_raise ArgumentError, fn ->
+        Transform.new(doc_node) |> Transform.remove_mark(1, 6, "em")
+      end
+    end
+  end
+
+  # ── clearIncompatible tests ─────────────────────────────────────────
+
+  describe "clearIncompatible" do
+    test "removes disallowed nodes and marks when changing to code_block" do
+      schema = test_schema()
+      {doc_node, _} = doc([p(["one ", em(["two"]), img(), " three"])])
+
+      tr =
+        Transform.new(doc_node)
+        |> Transform.clear_incompatible(0, schema.nodes["code_block"])
+
+      {expected, _} = doc([p(["one two three"])])
+      assert Node.eq(tr.doc, expected)
+    end
+
+    test "preserves allowed marks and nodes" do
+      schema = test_schema()
+      {doc_node, _} = doc([p(["hello ", strong([em(["world"])])])])
+
+      tr =
+        Transform.new(doc_node)
+        |> Transform.clear_incompatible(0, schema.nodes["heading"])
+
+      assert Node.eq(tr.doc, doc_node)
+    end
+
+    test "replaces \\n, \\r, and \\r\\n with spaces for non-pre parent" do
+      schema = test_schema()
+      {doc_node, _} = doc([pre(["a\nb\rc\r\nd"])])
+
+      tr =
+        Transform.new(doc_node)
+        |> Transform.clear_incompatible(0, schema.nodes["paragraph"])
+
+      {expected, _} = doc([pre(["a b c d"])])
+      assert Node.eq(tr.doc, expected)
+    end
+
+    test "handles multi-byte UTF-8 and emoji before \\r\\n and \\n without offset corruption" do
+      schema = test_schema()
+      {doc_node, _} = doc([pre(["😀a\r\n🎉b\nc"])])
+
+      tr =
+        Transform.new(doc_node)
+        |> Transform.clear_incompatible(0, schema.nodes["paragraph"])
+
+      {expected, _} = doc([pre(["😀a 🎉b c"])])
+      assert Node.eq(tr.doc, expected)
+    end
+
+    test "preserves allowed marks on spaces replacing newlines" do
+      schema = test_schema()
+      em_mark = MarkType.create(schema.marks["em"])
+
+      doc_node =
+        Schema.node(schema, "doc", nil, [
+          Schema.node(schema, "paragraph", nil, [
+            Schema.text(schema, "hi\nthere", [em_mark])
+          ])
+        ])
+
+      tr =
+        Transform.new(doc_node)
+        |> Transform.clear_incompatible(0, schema.nodes["heading"])
+
+      {expected, _} = doc([p([em(["hi there"])])])
+      assert Node.eq(tr.doc, expected)
+    end
+
+    test "skips newline clearing when clear_newlines is false or parent is pre" do
+      schema = test_schema()
+      {doc_node, _} = doc([pre(["line1\nline2\r\nline3"])])
+
+      tr_flag =
+        Transform.new(doc_node)
+        |> Transform.clear_incompatible(0, schema.nodes["paragraph"], nil, false)
+
+      assert Node.eq(tr_flag.doc, doc_node)
+
+      tr_pre =
+        Transform.new(doc_node)
+        |> Transform.clear_incompatible(0, schema.nodes["code_block"])
+
+      assert Node.eq(tr_pre.doc, doc_node)
+    end
+
+    test "fills required trailing content when final_match is not valid_end" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "box+"}},
+            {"box", %{"content" => "heading paragraph+"}},
+            {"heading", %{"content" => "text*"}},
+            {"paragraph", %{"content" => "text*"}},
+            {"text", %{}}
+          ],
+          "marks" => []
+        })
+
+      doc_node =
+        Schema.node(schema, "doc", nil, [
+          Schema.node(schema, "box", nil, [
+            Schema.node(schema, "heading", nil, [Schema.text(schema, "Title")]),
+            Schema.node(schema, "paragraph", nil, [Schema.text(schema, "Body")])
+          ])
+        ])
+
+      # Use clear_incompatible with a content match that only matched heading,
+      # forcing fill_before to add the required paragraph.
+      heading_only_match =
+        ProsemirrorEx.Model.ContentMatch.match_type(
+          schema.nodes["box"].content_match,
+          schema.nodes["heading"]
+        )
+
+      small_doc =
+        ProsemirrorEx.Model.NodeType.create(schema.nodes["doc"], nil, [
+          ProsemirrorEx.Model.NodeType.create(schema.nodes["box"], nil, [
+            Schema.node(schema, "heading", nil, [Schema.text(schema, "Title")])
+          ])
+        ])
+
+      tr =
+        Transform.new(small_doc)
+        |> Transform.clear_incompatible(0, schema.nodes["box"])
+
+      assert Node.child_count(Node.first_child(tr.doc)) == 2
+      assert Node.child(Node.first_child(tr.doc), 1).type.name == "paragraph"
+
+      # Custom starting match (post-heading) keeps paragraph without needing heading
+      para_only_box =
+        ProsemirrorEx.Model.NodeType.create(schema.nodes["doc"], nil, [
+          ProsemirrorEx.Model.NodeType.create(schema.nodes["box"], nil, [
+            Schema.node(schema, "paragraph", nil, [Schema.text(schema, "Body")])
+          ])
+        ])
+
+      tr_custom =
+        Transform.new(para_only_box)
+        |> Transform.clear_incompatible(0, schema.nodes["box"], heading_only_match)
+
+      assert Node.eq(tr_custom.doc, para_only_box)
+      assert doc_node != nil
+    end
+
+    test "raises ArgumentError when no node exists at pos" do
+      schema = test_schema()
+      {doc_node, _} = doc([p(["hello"])])
+
+      assert_raise ArgumentError, fn ->
+        Transform.new(doc_node)
+        |> Transform.clear_incompatible(100, schema.nodes["paragraph"])
+      end
+    end
   end
 end

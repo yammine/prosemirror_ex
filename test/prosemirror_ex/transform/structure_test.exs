@@ -260,6 +260,40 @@ defmodule ProsemirrorEx.Transform.StructureTest do
 
       refute Structure.can_split(doc, 4, 1, [%{type: s.nodes["scene"]}])
     end
+
+    test "returns false for depth <= 0" do
+      doc = structure_doc()
+      refute Structure.can_split(doc, 8, 0)
+      refute Structure.can_split(doc, 8, -1)
+    end
+
+    test "returns false across isolating nodes" do
+      s =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "panel+"}},
+            {"panel", %{"content" => "para+", "isolating" => true}},
+            {"para", %{"content" => "text*"}},
+            {"text", %{"group" => "inline"}}
+          ],
+          "marks" => []
+        })
+
+      doc = sn(s, "doc", [sn(s, "panel", [sn(s, "para", [st(s, "hi")])])])
+
+      # Inside para (depth 2): splitting depth 1 (para) is allowed, depth 2 (panel) is isolating -> false
+      assert Structure.can_split(doc, 3, 1)
+      refute Structure.can_split(doc, 3, 2)
+    end
+
+    test "supports depth >= 2 with types_after overrides including %NodeType{} and nil" do
+      s = structure_schema()
+      doc = structure_doc()
+
+      # At pos 17 (inside section head "Section head"): splitting depth 2 with overrides
+      assert Structure.can_split(doc, 17, 2, [s.nodes["sect"], %{type: s.nodes["head"]}])
+      assert Structure.can_split(doc, 17, 2, [nil, %{type: s.nodes["head"]}])
+    end
   end
 
   # ── liftTarget tests ────────────────────────────────────────────────
@@ -795,6 +829,72 @@ defmodule ProsemirrorEx.Transform.StructureTest do
       {expected, _} = doc([h2(["a"]), h1(["b"])])
       assert Node.eq(tr.doc, expected)
     end
+
+    test "converts \\n, \\r, \\r\\n and UTF-8/emoji offsets to hard_break when converting pre to paragraph" do
+      schema = ProsemirrorEx.Schema.Basic.schema()
+
+      doc_node =
+        Schema.node(schema, "doc", nil, [
+          Schema.node(schema, "code_block", nil, [
+            Schema.text(schema, "😀a\r\n🎉b\nc\rd")
+          ])
+        ])
+
+      tr =
+        Transform.new(doc_node)
+        |> Transform.set_block_type(1, 1, schema.nodes["paragraph"])
+
+      expected =
+        Schema.node(schema, "doc", nil, [
+          Schema.node(schema, "paragraph", nil, [
+            Schema.text(schema, "😀a"),
+            Schema.node(schema, "hard_break"),
+            Schema.text(schema, "🎉b"),
+            Schema.node(schema, "hard_break"),
+            Schema.text(schema, "c"),
+            Schema.node(schema, "hard_break"),
+            Schema.text(schema, "d")
+          ])
+        ])
+
+      assert Node.eq(tr.doc, expected)
+    end
+
+    test "converts hard_break to \\n when converting paragraph to pre" do
+      schema = ProsemirrorEx.Schema.Basic.schema()
+
+      doc_node =
+        Schema.node(schema, "doc", nil, [
+          Schema.node(schema, "paragraph", nil, [
+            Schema.text(schema, "hello"),
+            Schema.node(schema, "hard_break"),
+            Schema.text(schema, "world")
+          ])
+        ])
+
+      tr =
+        Transform.new(doc_node)
+        |> Structure.set_block_type(1, schema.nodes["code_block"])
+
+      expected =
+        Schema.node(schema, "doc", nil, [
+          Schema.node(schema, "code_block", nil, [
+            Schema.text(schema, "hello\nworld")
+          ])
+        ])
+
+      assert Node.eq(tr.doc, expected)
+    end
+
+    test "raises ArgumentError when target type is not a textblock" do
+      {doc_node, _} = doc([p(["hello"])])
+      schema = doc_node.type.schema
+
+      assert_raise ArgumentError, fn ->
+        Transform.new(doc_node)
+        |> Structure.set_block_type(1, 1, schema.nodes["blockquote"])
+      end
+    end
   end
 
   # ── setNodeMarkup tests (from test-trans.ts) ──────────────────────
@@ -829,6 +929,45 @@ defmodule ProsemirrorEx.Transform.StructureTest do
         "image",
         %{"src" => "bar", "alt" => "y"}
       )
+    end
+
+    test "preserves existing type when type is nil and updates attrs and marks" do
+      {doc_node, _} = doc([h1(["foo"])])
+
+      tr =
+        Transform.new(doc_node)
+        |> Structure.set_node_markup(0, nil, %{"level" => 3})
+
+      node = Node.child(tr.doc, 0)
+      assert node.type.name == "heading"
+      assert node.attrs["level"] == 3
+
+      {inline_doc, _} = doc([p(["foo", img()])])
+      schema = inline_doc.type.schema
+      em_mark = ProsemirrorEx.Model.MarkType.create(schema.marks["em"])
+
+      tr2 =
+        Transform.new(inline_doc)
+        |> Structure.set_node_markup(4, nil, %{"src" => "new.png", "alt" => "alt"}, [em_mark])
+
+      img_node = Node.child(Node.child(tr2.doc, 0), 1)
+      assert img_node.type.name == "image"
+      assert img_node.attrs["src"] == "new.png"
+      assert length(img_node.marks) == 1
+    end
+
+    test "raises ArgumentError when no node at pos and TransformError on invalid content" do
+      {doc_node, _} = doc([p(["foo", img()])])
+      schema = doc_node.type.schema
+
+      assert_raise ArgumentError, fn ->
+        Transform.new(doc_node) |> Structure.set_node_markup(100)
+      end
+
+      assert_raise ProsemirrorEx.Transform.TransformError, fn ->
+        Transform.new(doc_node)
+        |> Structure.set_node_markup(0, schema.nodes["code_block"])
+      end
     end
   end
 
@@ -894,6 +1033,52 @@ defmodule ProsemirrorEx.Transform.StructureTest do
         doc([p(["foo<a>bar"])])
       )
     end
+
+    test "converts linebreaks when joining pre and paragraph with linebreak_replacement" do
+      schema = ProsemirrorEx.Schema.Basic.schema()
+
+      # pre + paragraph(hard_break) -> pre with \n
+      doc1 =
+        Schema.node(schema, "doc", nil, [
+          Schema.node(schema, "code_block", nil, [Schema.text(schema, "a")]),
+          Schema.node(schema, "paragraph", nil, [
+            Schema.text(schema, "b"),
+            Schema.node(schema, "hard_break"),
+            Schema.text(schema, "c")
+          ])
+        ])
+
+      tr1 = Transform.new(doc1) |> Transform.join(3)
+
+      expected1 =
+        Schema.node(schema, "doc", nil, [
+          Schema.node(schema, "code_block", nil, [Schema.text(schema, "ab\nc")])
+        ])
+
+      assert Node.eq(tr1.doc, expected1)
+
+      # paragraph + pre(emoji + \r\n + \n) -> paragraph with hard_break
+      doc2 =
+        Schema.node(schema, "doc", nil, [
+          Schema.node(schema, "paragraph", nil, [Schema.text(schema, "a")]),
+          Schema.node(schema, "code_block", nil, [Schema.text(schema, "😀\r\nb\nc")])
+        ])
+
+      tr2 = Transform.new(doc2) |> Transform.join(3)
+
+      expected2 =
+        Schema.node(schema, "doc", nil, [
+          Schema.node(schema, "paragraph", nil, [
+            Schema.text(schema, "a😀"),
+            Schema.node(schema, "hard_break"),
+            Schema.text(schema, "b"),
+            Schema.node(schema, "hard_break"),
+            Schema.text(schema, "c")
+          ])
+        ])
+
+      assert Node.eq(tr2.doc, expected2)
+    end
   end
 
   # ── canJoin + joinPoint tests ──────────────────────────────────────
@@ -910,6 +1095,58 @@ defmodule ProsemirrorEx.Transform.StructureTest do
 
       assert Structure.can_join(doc_node, Map.fetch!(tags, "a"))
     end
+
+    test "returns false for non-joinable positions and leaf nodes" do
+      {doc_node, _} = doc([p(["foo"]), hr(), p(["bar"])])
+      refute Structure.can_join(doc_node, 0)
+      refute Structure.can_join(doc_node, 5)
+      refute Structure.can_join(doc_node, 6)
+    end
+
+    test "checks compatible_content for empty trailing blocks" do
+      {doc_node, tags} = doc([h1(["foo"]), "<a>", p([])])
+      assert Structure.can_join(doc_node, Map.fetch!(tags, "a"))
+
+      s =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "(alpha | beta)+"}},
+            {"alpha", %{"content" => "text*"}},
+            {"beta", %{"content" => "img*"}},
+            {"img", %{"inline" => true}},
+            {"text", %{"group" => "inline"}}
+          ],
+          "marks" => []
+        })
+
+      incompatible_doc = sn(s, "doc", [sn(s, "alpha", [st(s, "a")]), sn(s, "beta", [])])
+      refute Structure.can_join(incompatible_doc, 3)
+    end
+  end
+
+  describe "joinPoint" do
+    test "finds join point in dir -1 and dir +1 across nested blocks" do
+      {doc_node, _} =
+        doc([
+          blockquote([p(["a"])]),
+          blockquote([p(["b"])])
+        ])
+
+      # At pos 2 (start of first p inside first blockquote): no block before
+      assert Structure.join_point(doc_node, 2, -1) == nil
+      # Searching forward (+1) from pos 2 finds boundary at pos 5 between the two blockquotes
+      assert Structure.join_point(doc_node, 2, 1) == 5
+
+      # At pos 6 (start of p inside second blockquote): searching backward (-1) finds pos 5
+      assert Structure.join_point(doc_node, 6, -1) == 5
+      assert Structure.join_point(doc_node, 6, 1) == nil
+    end
+
+    test "returns nil when no ancestor is joinable" do
+      {doc_node, _} = doc([p(["hello"])])
+      assert Structure.join_point(doc_node, 3, -1) == nil
+      assert Structure.join_point(doc_node, 3, 1) == nil
+    end
   end
 
   # ── insertPoint / dropPoint tests ──────────────────────────────────
@@ -918,7 +1155,6 @@ defmodule ProsemirrorEx.Transform.StructureTest do
     test "finds insert point at valid position" do
       {doc_node, _} = doc([p(["hello"])])
       schema = doc_node.type.schema
-      # At beginning of doc, a paragraph can be inserted
       result = Structure.insert_point(doc_node, 0, schema.nodes["paragraph"])
       assert result == 0
     end
@@ -926,9 +1162,18 @@ defmodule ProsemirrorEx.Transform.StructureTest do
     test "finds insert point at end of doc" do
       {doc_node, _} = doc([p(["hello"])])
       schema = doc_node.type.schema
-      # At end of doc (after paragraph), a paragraph can be inserted
       result = Structure.insert_point(doc_node, doc_node.content.size, schema.nodes["paragraph"])
       assert result == doc_node.content.size
+    end
+
+    test "lifts out of start or end of textblock when inserting block node, returns nil in middle" do
+      {doc_node, _} = doc([p(["hello"])])
+      schema = doc_node.type.schema
+      hr_type = schema.nodes["horizontal_rule"]
+
+      assert Structure.insert_point(doc_node, 1, hr_type) == 0
+      assert Structure.insert_point(doc_node, 6, hr_type) == 7
+      assert Structure.insert_point(doc_node, 3, hr_type) == nil
     end
   end
 
@@ -937,6 +1182,65 @@ defmodule ProsemirrorEx.Transform.StructureTest do
       {doc_node, _} = doc([p(["hello"])])
       result = Structure.drop_point(doc_node, 3, Slice.empty())
       assert result == 3
+    end
+
+    test "handles closed slice, open slice, wrapping pass 2, bias, and unfittable slices" do
+      schema = test_schema()
+      {doc_node, _} = doc([p(["hello"]), p(["world"])])
+
+      # Closed paragraph slice dropped inside first paragraph -> biased before/after paragraph
+      para_slice = Slice.new(Fragment.from(Schema.node(schema, "paragraph")), 0, 0)
+      # pos 2 is in first half of p("hello") (1..6, mid=3) -> bias -1 -> before p (0)
+      assert Structure.drop_point(doc_node, 2, para_slice) == 0
+      # pos 5 is in second half of p("hello") -> bias +1 -> after p (7)
+      assert Structure.drop_point(doc_node, 5, para_slice) == 7
+
+      # Open paragraph slice (unwraps open_start = 1 -> text node) fits directly at pos 3
+      open_para =
+        Slice.new(
+          Fragment.from(Schema.node(schema, "paragraph", nil, [Schema.text(schema, "x")])),
+          1,
+          1
+        )
+
+      assert Structure.drop_point(doc_node, 3, open_para) == 3
+
+      # Pass 2 wrapping: dropping a list_item slice finds wrapper (ordered_list) at doc boundary
+      li_node = NodeType.create_and_fill(schema.nodes["list_item"])
+      li_slice = Slice.new(Fragment.from(li_node), 0, 0)
+      assert Structure.drop_point(doc_node, 2, li_slice) == 0
+
+      # Unfittable slice returns nil
+      hr_schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "hr+"}},
+            {"hr", %{}},
+            {"text", %{}}
+          ],
+          "marks" => []
+        })
+
+      hr_only_doc = sn(hr_schema, "doc", [sn(hr_schema, "hr", [])])
+      text_only = Slice.new(Fragment.from(Schema.text(hr_schema, "x")), 0, 0)
+      assert Structure.drop_point(hr_only_doc, 0, text_only) == nil
+    end
+  end
+
+  describe "wrap errors" do
+    test "raises ArgumentError when wrapper types do not form valid content" do
+      {doc_node, _} = doc([p(["hello"])])
+      schema = doc_node.type.schema
+      range = srange(doc_node, 1)
+
+      invalid_wrappers = [
+        %{type: schema.nodes["paragraph"], attrs: nil},
+        %{type: schema.nodes["blockquote"], attrs: nil}
+      ]
+
+      assert_raise ArgumentError, fn ->
+        Transform.new(doc_node) |> Structure.wrap(range, invalid_wrappers)
+      end
     end
   end
 end
