@@ -159,11 +159,7 @@ defmodule ProsemirrorEx.Model.Mark do
   Takes a schema and a JSON map with `"type"` and optionally `"attrs"` keys.
   """
   @spec from_json(Schema.t(), map()) :: t()
-  def from_json(schema, json) do
-    if not is_map(json) or is_struct(json) do
-      raise "Invalid input for Mark.fromJSON"
-    end
-
+  def from_json(schema, json) when is_map(json) and not is_struct(json) do
     type_name = json["type"]
 
     if not is_binary(type_name) do
@@ -181,6 +177,10 @@ defmodule ProsemirrorEx.Model.Mark do
     mark = MarkType.create(type, raw_attrs)
     MarkType.check_attrs(type, mark.attrs)
     mark
+  end
+
+  def from_json(_schema, _json) do
+    raise "Invalid input for Mark.fromJSON"
   end
 
   @doc """
