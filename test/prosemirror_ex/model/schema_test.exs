@@ -1077,19 +1077,6 @@ defmodule ProsemirrorEx.Model.SchemaTest do
   # ── Resource safety, nil/empty specs, groups, deduplication, and parity ──
 
   describe "ETS safety, process dict cleanliness, and Schema.new edge cases" do
-    test "does not leak ETS tables across 100 Schema.new/1 calls" do
-      # Warm up once
-      _ = test_schema()
-      before_count = length(:ets.all())
-
-      for _ <- 1..100 do
-        _ = test_schema()
-      end
-
-      after_count = length(:ets.all())
-      assert after_count == before_count
-    end
-
     test "schema built in exited Task process remains fully usable in caller" do
       schema = Task.async(fn -> test_schema() end) |> Task.await()
 

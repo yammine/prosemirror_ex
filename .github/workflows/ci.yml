@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     name: Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
 
     strategy:
       fail-fast: false
@@ -37,6 +37,8 @@ jobs:
             otp: "26.2.5"
           - elixir: "1.17.3"
             otp: "25.3.2"
+            # builds.hex.pm does not provide OTP 25 builds for Ubuntu 26.04
+            os: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
