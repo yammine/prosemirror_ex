@@ -173,59 +173,104 @@ defmodule ProsemirrorEx.Model.Schema do
         Map.put(ms, name, %{type | excluded: excluded, excluded_names: excluded_names})
       end)
 
-    # Step 6: Finalize MarkTypes, NodeTypes, ContentMatches, and back-references.
-    # First attach finalized marks to nodes and update ContentMatch DFAs & wrap caches.
-    nodes =
+    # Step 6: Finalize MarkTypes, NodeTypes, ContentMatches, and back-references
+    # with bounded depth so cross-process message passing stays small (~100 KB vs GBs).
+    #
+    # Hierarchy:
+    # - `leaf_nodes` / `bare_schema`: terminal NodeTypes (schema: nil, content_match: nil, mark_set: nil)
+    #   and `bare_schema` containing those terminal nodes (so `type.schema.nodes["text"]` and
+    #   `type.schema.linebreak_replacement` work without recursive cycles).
+    # - `edge_nodes`: NodeTypes stored inside ContentMatch edges & wrap_cache; they carry
+    #   `schema: bare_schema` and `leaf_cms` (whose edges point to `leaf_nodes` with `wrap_cache: nil`).
+    # - `snapshot_schema`: attached as `.schema` on top-level `schema.nodes` and `schema.marks`;
+    #   its nodes carry `schema: bare_schema` and `cms_with_edges` (edges -> `edge_nodes`).
+    # - Top-level `schema`: its nodes carry `schema: snapshot_schema` and `cms_with_edges`
+    #   (with precomputed `wrap_cache` pointing to `edge_nodes`).
+    leaf_nodes =
       Map.new(nodes, fn {name, type} ->
+        {name, %{type | schema: nil, content_match: nil, mark_set: nil}}
+      end)
+
+    bare_schema = %__MODULE__{
+      spec: %{},
+      nodes: %{"text" => leaf_nodes["text"]},
+      marks: %{},
+      top_node_type: nil,
+      linebreak_replacement: lbr_name && leaf_nodes[lbr_name],
+      cached: %{}
+    }
+
+    # Terminal ContentMatches (no wrap_cache, edges point directly to terminal leaf_nodes)
+    leaf_cms =
+      Map.new(content_expr_by_node, fn {expr, cm} ->
+        {expr, ContentMatch.update_node_types(cm, leaf_nodes)}
+      end)
+
+    # Edge-level NodeTypes: carry bare_schema, mark_set (linked to bare_marks), and leaf_cms
+    bare_marks =
+      Map.new(marks, fn {name, type} ->
+        {name, %{type | schema: bare_schema, excluded: [], instance: nil}}
+      end)
+
+    edge_nodes =
+      Enum.reduce(nodes_list, nodes, fn {name, node_spec}, ns ->
+        type = ns[name]
+        expr = Map.get(node_spec, "content") || ""
+        cm = Map.fetch!(leaf_cms, expr)
+
         updated_mark_set =
           case type.mark_set do
-            nil -> nil
-            list when is_list(list) -> Enum.map(list, fn mt -> Map.get(marks, mt.name, mt) end)
+            nil ->
+              nil
+
+            list when is_list(list) ->
+              Enum.map(list, fn mt -> Map.get(bare_marks, mt.name, mt) end)
           end
 
-        {name, %{type | mark_set: updated_mark_set}}
+        Map.put(ns, name, %{
+          type
+          | content_match: cm,
+            mark_set: updated_mark_set,
+            schema: bare_schema
+        })
       end)
 
-    # Pass 1: Update DFA edge NodeTypes so every edge has content_match & mark_set
-    updated_cms =
+    # Edge-updated ContentMatches (wrap_cache: nil) and wrapped ContentMatches (wrap_cache populated)
+    edge_cms =
       Map.new(content_expr_by_node, fn {expr, cm} ->
-        {expr, ContentMatch.update_node_types(cm, nodes)}
+        {expr, ContentMatch.update_node_types(cm, edge_nodes)}
       end)
 
-    nodes =
-      Enum.reduce(nodes_list, nodes, fn {name, node_spec}, ns ->
-        expr = Map.get(node_spec, "content") || ""
-        cm = Map.fetch!(updated_cms, expr)
-        Map.update!(ns, name, fn type -> %{type | content_match: cm} end)
-      end)
-
-    # Pass 2: Precompute wrapping tables once all node types have updated content_match
     wrapped_cms =
-      Map.new(updated_cms, fn {expr, cm} ->
+      Map.new(edge_cms, fn {expr, cm} ->
         {expr, ContentMatch.precompute_wrappings(cm)}
       end)
 
-    nodes =
+    # Snapshot level (1 hop inside top-level schema.nodes[x].schema)
+    marks_l1 = link_marks(marks, bare_schema, bare_marks)
+
+    nodes_l1 =
       Enum.reduce(nodes_list, nodes, fn {name, node_spec}, ns ->
+        type = ns[name]
         expr = Map.get(node_spec, "content") || ""
-        cm = Map.fetch!(wrapped_cms, expr)
-        Map.update!(ns, name, fn type -> %{type | content_match: cm} end)
+        cm = Map.fetch!(edge_cms, expr)
+
+        updated_mark_set =
+          case type.mark_set do
+            nil ->
+              nil
+
+            list when is_list(list) ->
+              Enum.map(list, fn mt -> Map.get(bare_marks, mt.name, mt) end)
+          end
+
+        Map.put(ns, name, %{
+          type
+          | content_match: cm,
+            mark_set: updated_mark_set,
+            schema: bare_schema
+        })
       end)
-
-    # Build shallow_schema (no nested nodes/marks maps) to terminate back-reference
-    # depth so Schema structs stay small and fast to copy across processes, while
-    # preserving 2-hop access (e.g. doc.type.schema.nodes[x].schema.linebreak_replacement).
-    shallow_schema = %{
-      schema
-      | nodes: %{},
-        marks: %{},
-        top_node_type: nil,
-        linebreak_replacement: lbr_name && nodes[lbr_name]
-    }
-
-    # First link pass: attach shallow_schema so nodes inside snapshot_schema have non-nil schema
-    {nodes_l1, marks_l1, cms_l1} =
-      link_schema_refs(nodes, marks, nodes_list, wrapped_cms, shallow_schema)
 
     snapshot_schema = %{
       schema
@@ -235,9 +280,32 @@ defmodule ProsemirrorEx.Model.Schema do
         linebreak_replacement: lbr_name && nodes_l1[lbr_name]
     }
 
-    # Second link pass: attach snapshot_schema to top-level nodes/marks and edge refs
-    {nodes_l2, marks_l2, _cms_l2} =
-      link_schema_refs(nodes_l1, marks_l1, nodes_list, cms_l1, snapshot_schema)
+    # Top level: attach snapshot_schema and wrapped_cms; keep mark_set/excluded/instance bounded
+    marks_l2 =
+      Map.new(marks_l1, fn {name, type} ->
+        %{type | schema: snapshot_schema}
+        |> then(&{name, &1})
+      end)
+
+    nodes_l2 =
+      Enum.reduce(nodes_list, nodes, fn {name, node_spec}, ns ->
+        type = ns[name]
+        expr = Map.get(node_spec, "content") || ""
+        cm = Map.fetch!(wrapped_cms, expr)
+
+        updated_mark_set =
+          case type.mark_set do
+            nil -> nil
+            list when is_list(list) -> Enum.map(list, fn mt -> Map.get(marks_l1, mt.name, mt) end)
+          end
+
+        Map.put(ns, name, %{
+          type
+          | content_match: cm,
+            mark_set: updated_mark_set,
+            schema: snapshot_schema
+        })
+      end)
 
     %{
       snapshot_schema
@@ -248,51 +316,27 @@ defmodule ProsemirrorEx.Model.Schema do
     }
   end
 
-  defp link_schema_refs(nodes, marks, nodes_list, cms_by_expr, target_schema) do
+  defp link_marks(marks, target_schema, excluded_target_marks) do
     marks =
       Map.new(marks, fn {name, type} ->
         {name, %{type | schema: target_schema}}
       end)
 
-    marks =
-      Map.new(marks, fn {name, type} ->
-        updated_excluded = Enum.map(type.excluded, fn ex -> Map.get(marks, ex.name, ex) end)
-        updated_type = %{type | excluded: updated_excluded}
+    Map.new(marks, fn {name, type} ->
+      updated_excluded =
+        Enum.map(type.excluded, fn ex -> Map.get(excluded_target_marks, ex.name, ex) end)
 
-        updated_type =
-          if updated_type.instance do
-            %{updated_type | instance: %{updated_type.instance | type: updated_type}}
-          else
-            updated_type
-          end
+      updated_type = %{type | excluded: updated_excluded}
 
-        {name, updated_type}
-      end)
+      updated_type =
+        if updated_type.instance do
+          %{updated_type | instance: %{updated_type.instance | type: updated_type}}
+        else
+          updated_type
+        end
 
-    nodes =
-      Map.new(nodes, fn {name, type} ->
-        updated_mark_set =
-          case type.mark_set do
-            nil -> nil
-            list when is_list(list) -> Enum.map(list, fn mt -> Map.get(marks, mt.name, mt) end)
-          end
-
-        {name, %{type | mark_set: updated_mark_set, schema: target_schema}}
-      end)
-
-    updated_cms =
-      Map.new(cms_by_expr, fn {expr, cm} ->
-        {expr, ContentMatch.update_node_types(cm, nodes)}
-      end)
-
-    nodes =
-      Enum.reduce(nodes_list, nodes, fn {name, node_spec}, ns ->
-        expr = Map.get(node_spec, "content") || ""
-        cm = Map.fetch!(updated_cms, expr)
-        Map.update!(ns, name, fn type -> %{type | content_match: cm} end)
-      end)
-
-    {nodes, marks, updated_cms}
+      {name, updated_type}
+    end)
   end
 
   @doc "Create a node in this schema."
