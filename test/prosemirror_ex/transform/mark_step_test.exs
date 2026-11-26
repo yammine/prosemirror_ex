@@ -326,6 +326,68 @@ defmodule ProsemirrorEx.Transform.MarkStepTest do
       end
     end
 
+    test "fails gracefully when applied to a text node" do
+      {doc_node, _} = doc([p(["hello"])])
+      schema = test_schema()
+      em_mark = MarkType.create(schema.marks["em"])
+
+      step = AddNodeMarkStep.new(2, em_mark)
+      result = AddNodeMarkStep.apply(step, doc_node)
+      assert result.failed != nil
+      assert result.doc == nil
+    end
+
+    test "maps across a pure insertion at step.pos without returning nil" do
+      schema = test_schema()
+      em_mark = MarkType.create(schema.marks["em"])
+      step = AddNodeMarkStep.new(0, em_mark)
+      mapped = AddNodeMarkStep.map(step, StepMap.new([0, 0, 5]))
+      assert mapped != nil
+      assert mapped.pos == 5
+    end
+
+    test "invert handles replacing an excluded mark and re-adding an existing mark" do
+      excl_schema =
+        ProsemirrorEx.Model.Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "block+"}},
+            {"paragraph", %{"content" => "inline*", "group" => "block"}},
+            {"text", %{"group" => "inline"}},
+            {"image",
+             %{
+               "group" => "inline",
+               "inline" => true,
+               "attrs" => %{"src" => %{"default" => "a.png"}}
+             }}
+          ],
+          "marks" => [
+            {"alpha", %{"excludes" => "beta"}},
+            {"beta", %{"excludes" => "alpha"}}
+          ]
+        })
+
+      alpha = MarkType.create(excl_schema.marks["alpha"])
+      beta = MarkType.create(excl_schema.marks["beta"])
+
+      img_node =
+        ProsemirrorEx.Model.NodeType.create(excl_schema.nodes["image"], nil, nil, [alpha])
+
+      p_node =
+        ProsemirrorEx.Model.NodeType.create(excl_schema.nodes["paragraph"], nil, [img_node])
+
+      doc_node = ProsemirrorEx.Model.NodeType.create(excl_schema.nodes["doc"], nil, [p_node])
+
+      # Adding beta replaces alpha -> invert restores alpha
+      inv_replace = AddNodeMarkStep.invert(AddNodeMarkStep.new(1, beta), doc_node)
+      assert inv_replace.__struct__ == AddNodeMarkStep
+      assert Mark.eq(inv_replace.mark, alpha)
+
+      # Adding alpha when alpha is already present -> invert returns AddNodeMarkStep(1, alpha)
+      inv_same = AddNodeMarkStep.invert(AddNodeMarkStep.new(1, alpha), doc_node)
+      assert inv_same.__struct__ == AddNodeMarkStep
+      assert Mark.eq(inv_same.mark, alpha)
+    end
+
     test "JSON round-trip" do
       {doc_node, _} = doc([p([img()])])
       schema = test_schema()
@@ -415,6 +477,37 @@ defmodule ProsemirrorEx.Transform.MarkStepTest do
       assert_raise ArgumentError, fn ->
         RemoveNodeMarkStep.from_json(schema, %{})
       end
+    end
+
+    test "fails gracefully when applied to a text node" do
+      {doc_node, _} = doc([p(["hello"])])
+      schema = test_schema()
+      em_mark = MarkType.create(schema.marks["em"])
+
+      step = RemoveNodeMarkStep.new(2, em_mark)
+      result = RemoveNodeMarkStep.apply(step, doc_node)
+      assert result.failed != nil
+      assert result.doc == nil
+    end
+
+    test "maps across a pure insertion at step.pos without returning nil" do
+      schema = test_schema()
+      em_mark = MarkType.create(schema.marks["em"])
+      step = RemoveNodeMarkStep.new(0, em_mark)
+      mapped = RemoveNodeMarkStep.map(step, StepMap.new([0, 0, 5]))
+      assert mapped != nil
+      assert mapped.pos == 5
+    end
+
+    test "AddMarkStep and RemoveMarkStep return fail on out-of-bounds positions" do
+      {doc_node, _} = doc([p(["hello"])])
+      schema = test_schema()
+      em_mark = MarkType.create(schema.marks["em"])
+
+      assert AddMarkStep.apply(AddMarkStep.new(0, 99, em_mark), doc_node).failed != nil
+      assert AddMarkStep.apply(AddMarkStep.new(5, 2, em_mark), doc_node).failed != nil
+      assert RemoveMarkStep.apply(RemoveMarkStep.new(0, 99, em_mark), doc_node).failed != nil
+      assert RemoveMarkStep.apply(RemoveMarkStep.new(5, 2, em_mark), doc_node).failed != nil
     end
 
     test "JSON round-trip" do

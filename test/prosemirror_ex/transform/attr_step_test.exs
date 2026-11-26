@@ -55,6 +55,30 @@ defmodule ProsemirrorEx.Transform.AttrStepTest do
       assert result.failed != nil
     end
 
+    test "fails gracefully when applied to a text node" do
+      {doc_node, _} = doc([p(["hello"])])
+
+      step = AttrStep.new(2, "level", 2)
+      result = AttrStep.apply(step, doc_node)
+      assert result.failed != nil
+      assert result.doc == nil
+    end
+
+    test "invert does not crash when no node at position" do
+      {doc_node, _} = doc([p(["hello"])])
+
+      step = AttrStep.new(100, "level", 2)
+      inv = AttrStep.invert(step, doc_node)
+      assert inv == AttrStep.new(100, "level", nil)
+    end
+
+    test "maps across a pure insertion at step.pos without returning nil" do
+      step = AttrStep.new(0, "level", 2)
+      mapped = AttrStep.map(step, StepMap.new([0, 0, 5]))
+      assert mapped != nil
+      assert mapped.pos == 5
+    end
+
     test "step_map returns empty StepMap" do
       step = AttrStep.new(0, "level", 2)
       map = AttrStep.step_map(step)
