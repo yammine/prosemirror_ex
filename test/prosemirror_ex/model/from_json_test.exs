@@ -342,6 +342,147 @@ defmodule ProsemirrorEx.Model.FromJsonTest do
         PmNode.check(bad_doc)
       end
     end
+
+    test "rejects manually constructed empty text node" do
+      schema = test_schema()
+      empty_text = %Node{type: schema.nodes["text"], text: "", marks: [], attrs: %{}}
+
+      assert_raise RuntimeError, ~r/Empty text/, fn ->
+        PmNode.check(empty_text)
+      end
+    end
+
+    test "handles mark with nil attrs safely" do
+      schema = test_schema()
+      em_mark = %Mark{type: schema.marks["em"], attrs: nil}
+      t = %Node{type: schema.nodes["text"], text: "ok", marks: [em_mark], attrs: %{}}
+      para = NodeType.create(schema.nodes["paragraph"], nil, [t])
+      d = NodeType.create(schema.nodes["doc"], nil, [para])
+      assert PmNode.check(d) == :ok
+    end
+  end
+
+  # ── Malformed & untrusted JSON hardening ───────────────────────────────
+
+  describe "malformed/untrusted JSON validation" do
+    test "Node.from_json rejects non-map inputs and non-string type" do
+      schema = test_schema()
+
+      for bad <- ["str", 123, [], true] do
+        assert_raise RuntimeError, ~r/Invalid input/, fn ->
+          PmNode.from_json(schema, bad)
+        end
+      end
+
+      assert_raise RuntimeError, ~r/Invalid input/, fn ->
+        PmNode.from_json(schema, %{"type" => 123})
+      end
+    end
+
+    test "Node.from_json rejects non-map or unknown attrs (even when node has no attrs)" do
+      schema = test_schema()
+
+      assert_raise RuntimeError, ~r/Invalid attrs/, fn ->
+        PmNode.from_json(schema, %{"type" => "paragraph", "attrs" => "bad"})
+      end
+
+      assert_raise RuntimeError, ~r/Unsupported attribute/, fn ->
+        PmNode.from_json(schema, %{"type" => "paragraph", "attrs" => %{"extra" => 1}})
+      end
+
+      assert_raise RuntimeError, ~r/Unsupported attribute/, fn ->
+        PmNode.from_json(schema, %{"type" => "heading", "attrs" => %{"unknown" => 2}})
+      end
+    end
+
+    test "Node.from_json rejects attrs or content on text nodes" do
+      schema = test_schema()
+
+      assert_raise RuntimeError, ~r/Unsupported attribute/, fn ->
+        PmNode.from_json(schema, %{
+          "type" => "text",
+          "text" => "hi",
+          "attrs" => %{"foo" => "bar"}
+        })
+      end
+
+      assert_raise RuntimeError, ~r/Text node cannot have content/, fn ->
+        PmNode.from_json(schema, %{
+          "type" => "text",
+          "text" => "hi",
+          "content" => []
+        })
+      end
+
+      assert_raise RuntimeError, ~r/Empty text/, fn ->
+        PmNode.from_json(schema, %{"type" => "text", "text" => ""})
+      end
+    end
+
+    test "Node.from_json rejects invalid content expressions and disallowed marks" do
+      schema = test_schema()
+
+      # doc requires block+, text is not allowed directly under doc
+      assert_raise RuntimeError, ~r/Invalid content/, fn ->
+        PmNode.from_json(schema, %{
+          "type" => "doc",
+          "content" => [%{"type" => "text", "text" => "loose"}]
+        })
+      end
+
+      # code_block has marks: "", so em mark is disallowed
+      assert_raise RuntimeError, ~r/Invalid content/, fn ->
+        PmNode.from_json(schema, %{
+          "type" => "code_block",
+          "content" => [
+            %{"type" => "text", "text" => "code", "marks" => [%{"type" => "em"}]}
+          ]
+        })
+      end
+
+      # leaf node with content is invalid
+      assert_raise RuntimeError, ~r/Invalid content/, fn ->
+        PmNode.from_json(schema, %{
+          "type" => "horizontal_rule",
+          "content" => [%{"type" => "paragraph"}]
+        })
+      end
+    end
+
+    test "Slice.from_json rejects malformed inputs and negative Slice.size" do
+      schema = test_schema()
+
+      for bad <- [
+            "str",
+            123,
+            [],
+            %{"openStart" => -1},
+            %{"openEnd" => -2},
+            %{"openStart" => 1.5},
+            %{"openStart" => "1"},
+            %{"openStart" => true},
+            %{"openStart" => 1},
+            %{"content" => "bad"},
+            %{"content" => [%{"type" => "paragraph"}], "openStart" => 2, "openEnd" => 2}
+          ] do
+        assert_raise ArgumentError, fn ->
+          ProsemirrorEx.Model.Slice.from_json(schema, bad)
+        end
+      end
+
+      assert_raise RuntimeError, ~r/Invalid content|disallowed mark/, fn ->
+        ProsemirrorEx.Model.Slice.from_json(schema, %{
+          "content" => [
+            %{
+              "type" => "code_block",
+              "content" => [
+                %{"type" => "text", "text" => "x", "marks" => [%{"type" => "em"}]}
+              ]
+            }
+          ]
+        })
+      end
+    end
   end
 
   # ── Node.content_match_at ──────────────────────────────────────────────
@@ -350,13 +491,13 @@ defmodule ProsemirrorEx.Model.FromJsonTest do
     test "returns content match at index 0" do
       {node, _} = doc([p(["hello"]), p(["world"])])
       match = PmNode.content_match_at(node, 0)
-      assert match != nil
+      assert %ProsemirrorEx.Model.ContentMatch{} = match
     end
 
     test "returns content match after all children" do
       {node, _} = doc([p(["hello"])])
       match = PmNode.content_match_at(node, 1)
-      assert match != nil
+      assert %ProsemirrorEx.Model.ContentMatch{} = match
       assert match.valid_end == true
     end
   end

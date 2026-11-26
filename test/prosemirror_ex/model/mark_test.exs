@@ -252,6 +252,11 @@ defmodule ProsemirrorEx.Model.MarkTest do
       result = Mark.set_from([code(), em(), strong()])
       assert Enum.map(result, fn m -> m.type.name end) == ["em", "strong", "code"]
     end
+
+    test "sorts without silently deduplicating duplicate marks" do
+      result = Mark.set_from([em(), em()])
+      assert length(result) == 2
+    end
   end
 
   # ===================== removeFromSet tests =====================
@@ -278,6 +283,63 @@ defmodule ProsemirrorEx.Model.MarkTest do
     test "doesn't remove a mark when its attrs differ" do
       set = [em(), link("http://foo")]
       assert Mark.remove_from_set(link("http://bar"), set) == set
+    end
+  end
+
+  # ===================== from_json validation tests =====================
+
+  describe "Mark.from_json validation" do
+    test "rejects non-map inputs and non-binary type" do
+      schema = ProsemirrorEx.Schema.Basic.schema()
+
+      for bad <- [nil, "em", 123, [], %{}] do
+        assert_raise RuntimeError, ~r/Invalid input/, fn ->
+          Mark.from_json(schema, bad)
+        end
+      end
+    end
+
+    test "rejects non-map attrs" do
+      schema = ProsemirrorEx.Schema.Basic.schema()
+
+      assert_raise RuntimeError, ~r/Invalid attributes/, fn ->
+        Mark.from_json(schema, %{"type" => "em", "attrs" => "invalid"})
+      end
+    end
+
+    test "rejects unknown attributes in JSON" do
+      schema = ProsemirrorEx.Schema.Basic.schema()
+
+      assert_raise RuntimeError, ~r/Unsupported attribute bogus/, fn ->
+        Mark.from_json(schema, %{"type" => "em", "attrs" => %{"bogus" => 1}})
+      end
+
+      assert_raise RuntimeError, ~r/Unsupported attribute bogus/, fn ->
+        Mark.from_json(schema, %{
+          "type" => "link",
+          "attrs" => %{"href" => "https://example.com", "bogus" => 1}
+        })
+      end
+    end
+
+    test "runs string validate rules during Mark.from_json" do
+      schema =
+        ProsemirrorEx.Model.Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "text*"}},
+            {"text", %{}}
+          ],
+          "marks" => [
+            {"tag", %{"attrs" => %{"label" => %{"validate" => "string"}}}}
+          ]
+        })
+
+      mark = Mark.from_json(schema, %{"type" => "tag", "attrs" => %{"label" => "ok"}})
+      assert mark.attrs["label"] == "ok"
+
+      assert_raise RuntimeError, ~r/Expected value of type string/, fn ->
+        Mark.from_json(schema, %{"type" => "tag", "attrs" => %{"label" => 42}})
+      end
     end
   end
 end

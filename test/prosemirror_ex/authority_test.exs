@@ -35,6 +35,58 @@ defmodule ProsemirrorEx.AuthorityTest do
       assert Authority.doc(auth) != nil
       assert Authority.doc(auth).type.name == "doc"
     end
+
+    test "supports initial :version option for DB snapshot reloads" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["snapshot"])])
+      auth = Authority.new(schema, doc_node, version: 42)
+
+      assert Authority.version(auth) == 42
+      assert Authority.first_version(auth) == 42
+      assert {:ok, [], []} = Authority.steps_since(auth, 42)
+      assert {:error, :history_unavailable} = Authority.steps_since(auth, 41)
+      assert {:error, :invalid_version} = Authority.steps_since(auth, 43)
+
+      step = make_insert_step(schema, "!", 9)
+      assert {:error, :version_mismatch} = Authority.receive_steps(auth, "c1", 0, [step])
+      assert {:ok, auth2} = Authority.receive_steps(auth, "c1", 42, [step])
+      assert Authority.version(auth2) == 43
+      assert Authority.first_version(auth2) == 42
+      assert {:ok, [_], ["c1"]} = Authority.steps_since(auth2, 42)
+    end
+
+    test "validates :version, :doc, and empty doc creation" do
+      schema = make_schema()
+
+      assert_raise ArgumentError, fn ->
+        Authority.new(schema, nil, version: -1)
+      end
+
+      assert_raise ArgumentError, fn ->
+        Authority.new(schema, nil, version: 1.5)
+      end
+
+      assert_raise ArgumentError, fn ->
+        invalid_doc = Function.identity(%{"type" => "doc"})
+        Authority.new(schema, invalid_doc)
+      end
+
+      unfillable_cm = %ProsemirrorEx.Model.ContentMatch{
+        valid_end: false,
+        next: [],
+        states: %{0 => %{valid_end: false, edges: [], edge_map: %{}, wrap_cache: %{}}},
+        state_id: 0
+      }
+
+      unfillable_schema = %{
+        schema
+        | top_node_type: %{schema.top_node_type | content_match: unfillable_cm}
+      }
+
+      assert_raise ArgumentError, fn ->
+        Authority.new(unfillable_schema)
+      end
+    end
   end
 
   describe "receive_steps/4" do
@@ -287,6 +339,27 @@ defmodule ProsemirrorEx.AuthorityTest do
       assert {:ok, steps, client_ids} = Authority.steps_since(auth, 2)
       assert length(steps) == 2
       assert client_ids == ["c3", "c3"]
+    end
+  end
+
+  describe "input validation guards" do
+    test "rejects float or non-integer client_version and since" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      auth = Authority.new(schema, doc_node)
+
+      assert {:error, :invalid_version} = Authority.receive_steps(auth, "c1", 0.0, [])
+      assert {:error, :invalid_version} = Authority.receive_steps(auth, "c1", "0", [])
+      assert {:error, :invalid_version} = Authority.steps_since(auth, 0.0)
+      assert {:error, :invalid_version} = Authority.steps_since(auth, "0")
+    end
+
+    test "rejects non-list steps without crashing" do
+      schema = make_schema()
+      {doc_node, _} = doc([p(["hello"])])
+      auth = Authority.new(schema, doc_node)
+
+      assert {:error, :step_failed, _msg} = Authority.receive_steps(auth, "c1", 0, :not_a_list)
     end
   end
 end

@@ -196,5 +196,87 @@ defmodule ProsemirrorEx.Transform.MappingTest do
       assert %MapResult{} = result
       assert result.pos == 2
     end
+
+    test "new/1-4 initializes maps, mirror, from, to and validates bounds" do
+      m1 = StepMap.new([2, 4, 0])
+      m2 = StepMap.new([2, 0, 4])
+      mapping = Mapping.new([m1, m2], [0, 1], 0, 2)
+
+      assert Mapping.get_mirror(mapping, 0) == 1
+      assert Mapping.get_mirror(mapping, 1) == 0
+      assert Mapping.map(mapping, 4) == 4
+
+      assert_raise ArgumentError, fn ->
+        Mapping.new([m1], nil, 1, 0)
+      end
+
+      assert_raise ArgumentError, fn ->
+        Mapping.new([m1], [0])
+      end
+    end
+
+    test "slice/1-3 supports default arguments and validates bounds" do
+      mapping = mk([[2, 0, 4], [10, 3, 0], [1, 0, 2]])
+
+      full = Mapping.slice(mapping)
+      assert full.from == 0
+      assert full.to == 3
+
+      tail = Mapping.slice(mapping, 1)
+      assert tail.from == 1
+      assert tail.to == 3
+      assert Mapping.map(tail, 15) == 14
+
+      mid = Mapping.slice(mapping, 1, 2)
+      assert mid.from == 1
+      assert mid.to == 2
+      assert Mapping.map(mid, 15) == 12
+      assert Mapping.map_result(mid, 11).pos == 10
+
+      assert_raise ArgumentError, fn -> Mapping.slice(mapping, -1, 2) end
+      assert_raise ArgumentError, fn -> Mapping.slice(mapping, 2, 1) end
+      assert_raise ArgumentError, fn -> Mapping.slice(mapping, 0, 4) end
+    end
+
+    test "map/2 and map_result/2 respect sliced bounds with mirrors" do
+      mapping = mk([[2, 4, 0], [2, 0, 4], %{0 => 1}])
+
+      # Slice excluding mirror partner: deletion is NOT recovered
+      first_only = Mapping.slice(mapping, 0, 1)
+      res = Mapping.map_result(first_only, 4, 1)
+      assert res.pos == 2
+      assert MapResult.deleted_across?(res)
+      assert Mapping.map(first_only, 4, 1) == 2
+
+      # Slice including mirror partner: deletion IS recovered
+      both = Mapping.slice(mapping, 0, 2)
+      res2 = Mapping.map_result(both, 4, 1)
+      assert res2.pos == 4
+      refute MapResult.deleted?(res2)
+    end
+
+    test "append_mapping_inverted/2 preserves mirrors" do
+      m1 = mk([[2, 4, 0], [1, 0, 1], [3, 0, 4], %{0 => 2}])
+      inv = Mapping.append_mapping_inverted(Mapping.new(), m1)
+
+      assert Mapping.get_mirror(inv, 0) == 2
+      assert Mapping.get_mirror(inv, 2) == 0
+      assert Mapping.map(inv, 5) == 4
+      assert Mapping.map(inv, 7) == 6
+    end
+
+    test "get_mirror/2 works on manually constructed Mapping without mirror_map" do
+      manual = %Mapping{
+        maps: [StepMap.new([2, 4, 0]), StepMap.new([2, 0, 4])],
+        mirror: [0, 1],
+        from: 0,
+        to: 2
+      }
+
+      assert Mapping.get_mirror(manual, 0) == 1
+      assert Mapping.get_mirror(manual, 1) == 0
+      assert Mapping.get_mirror(manual, 5) == nil
+      assert Mapping.map(manual, 4) == 4
+    end
   end
 end

@@ -106,7 +106,7 @@ auth = Authority.new(schema, doc, max_history: 10_000)
 # {:error, :history_unavailable} — reload via Authority.doc/1
 ```
 
-`ProsemirrorEx.Authority.Server` wraps this in a GenServer with JSON boundaries and `subscribe/1` notifications (`{:authority_update, payload}`), the Elixir equivalent of the guide's `onNewSteps` callbacks.
+`ProsemirrorEx.Authority.Server` wraps this in a GenServer with JSON boundaries (accepting `%Node{}` or JSON maps for `:doc` / `:doc_json`, plus `:version` for snapshot reloads), unique `child_spec/1` IDs for supervising multiple documents, and `subscribe/1` notifications (`{:authority_update, payload}`), the Elixir equivalent of the guide's `onNewSteps` callbacks.
 
 ## License
 

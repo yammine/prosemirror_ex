@@ -36,6 +36,12 @@ defmodule ProsemirrorEx.Schema.BasicTest do
       schema = Basic.schema()
       assert schema.top_node_type.name == "doc"
     end
+
+    test "sets linebreak_replacement to hard_break" do
+      schema = Basic.schema()
+      assert schema.linebreak_replacement.name == "hard_break"
+      assert schema.nodes["hard_break"].spec["linebreakReplacement"] == true
+    end
   end
 
   describe "nodes/0 and marks/0" do

@@ -13,23 +13,36 @@ defmodule ProsemirrorEx.Transform.Structure do
     Fragment,
     Slice,
     ContentMatch,
-    ResolvedPos
+    ResolvedPos,
+    Utf16
   }
 
   alias ProsemirrorEx.Transform.{
     Transform,
+    TransformError,
     ReplaceStep,
     ReplaceAroundStep,
     Mapping
   }
 
+  @type transform_map :: %{
+          required(:doc) => Node.t(),
+          required(:steps) => [term()],
+          required(:docs) => [Node.t()],
+          required(:mapping) => Mapping.t(),
+          optional(atom()) => term()
+        }
+
+  @type node_spec :: %{
+          required(:type) => NodeType.t(),
+          optional(:attrs) => map() | nil
+        }
+
   # ── Private helpers ──────────────────────────────────────────────────
 
   # Create a mapping that maps only through steps from `from` to the end.
-  # In JS: mapping.slice(from) defaults to = maps.length.
-  # In Elixir: Mapping.slice(mapping, from \\ 0, to) requires explicit to.
   defp mapping_from(mapping, from) do
-    Mapping.slice(mapping, from, length(mapping.maps))
+    Mapping.slice(mapping, from)
   end
 
   defp can_cut(node, start_idx, end_idx) do
@@ -44,6 +57,7 @@ defmodule ProsemirrorEx.Transform.Structure do
   can be lifted. Will not go across isolating parent nodes.
   Returns an integer depth or nil.
   """
+  @spec lift_target(NodeRange.t()) :: non_neg_integer() | nil
   def lift_target(%NodeRange{} = range) do
     parent = NodeRange.parent(range)
 
@@ -86,6 +100,7 @@ defmodule ProsemirrorEx.Transform.Structure do
   Lift the content in the given range out of its parent to the
   given target depth.
   """
+  @spec lift(transform_map(), NodeRange.t(), non_neg_integer()) :: transform_map()
   def lift(tr, %NodeRange{} = range, target) do
     from = range.from
     to = range.to
@@ -96,10 +111,7 @@ defmodule ProsemirrorEx.Transform.Structure do
     start_pos = gap_start
     end_pos = gap_end
 
-    # Build before fragment
     {before, open_start, start_pos} = build_lift_before(from, depth, target, start_pos)
-
-    # Build after fragment
     {after_frag, open_end, end_pos} = build_lift_after(to, depth, target, end_pos)
 
     slice = Slice.new(Fragment.append(before, after_frag), open_start, open_end)
@@ -179,7 +191,14 @@ defmodule ProsemirrorEx.Transform.Structure do
   node of the given type. May introduce extra nodes around and inside
   the wrapper node. Returns nil if no valid wrapping could be found.
   """
-  def find_wrapping(%NodeRange{} = range, node_type, attrs \\ nil, inner_range \\ nil) do
+  @spec find_wrapping(NodeRange.t(), NodeType.t(), map() | nil, NodeRange.t() | nil) ::
+          [node_spec()] | nil
+  def find_wrapping(
+        %NodeRange{} = range,
+        %NodeType{} = node_type,
+        attrs \\ nil,
+        inner_range \\ nil
+      ) do
     inner_range = inner_range || range
     around = find_wrapping_outside(range, node_type)
     inner = around && find_wrapping_inside(inner_range, node_type)
@@ -202,7 +221,7 @@ defmodule ProsemirrorEx.Transform.Structure do
     around = ContentMatch.find_wrapping(Node.content_match_at(parent, start_index), type)
 
     if around do
-      outer = if length(around) > 0, do: List.first(around), else: type
+      outer = if around != [], do: List.first(around), else: type
       if Node.can_replace_with(parent, start_index, end_index, outer), do: around, else: nil
     else
       nil
@@ -217,17 +236,20 @@ defmodule ProsemirrorEx.Transform.Structure do
     inside = ContentMatch.find_wrapping(type.content_match, inner.type)
 
     if inside do
-      last_type = if length(inside) > 0, do: List.last(inside), else: type
+      last_type = if inside != [], do: List.last(inside), else: type
+
+      children =
+        if end_index > start_index do
+          Enum.slice(parent.content.content, start_index, end_index - start_index)
+        else
+          []
+        end
 
       inner_match =
-        Enum.reduce_while(start_index..(end_index - 1)//1, last_type.content_match, fn i,
-                                                                                       match_acc ->
-          if match_acc do
-            child = Node.child(parent, i)
-            result = ContentMatch.match_type(match_acc, child.type)
-            if result, do: {:cont, result}, else: {:halt, nil}
-          else
-            {:halt, nil}
+        Enum.reduce_while(children, last_type.content_match, fn child, match_acc ->
+          case ContentMatch.match_type(match_acc, child.type) do
+            nil -> {:halt, nil}
+            result -> {:cont, result}
           end
         end)
 
@@ -246,16 +268,18 @@ defmodule ProsemirrorEx.Transform.Structure do
   @doc """
   Wrap the content in the given range in the given wrapper nodes.
   """
-  def wrap(tr, %NodeRange{} = range, wrappers) do
+  @spec wrap(transform_map(), NodeRange.t(), [node_spec()]) :: transform_map()
+  def wrap(tr, %NodeRange{} = range, wrappers) when is_list(wrappers) do
     content =
-      Enum.reduce((length(wrappers) - 1)..0//-1, Fragment.empty(), fn i, content_acc ->
-        wrapper = Enum.at(wrappers, i)
-
+      wrappers
+      |> Enum.reverse()
+      |> Enum.reduce(Fragment.empty(), fn wrapper, content_acc ->
         if content_acc.size > 0 do
           match = ContentMatch.match_fragment(wrapper.type.content_match, content_acc)
 
           if !match || !match.valid_end do
-            raise "Wrapper type given to Transform.wrap does not form valid content of its parent wrapper"
+            raise ArgumentError,
+                  "Wrapper type given to Transform.wrap does not form valid content of its parent wrapper"
           end
         end
 
@@ -291,83 +315,91 @@ defmodule ProsemirrorEx.Transform.Structure do
   Set the type of all textblocks (partly) between `from` and `to` to the
   given node type with the given attributes.
   """
-  def set_block_type(tr, from, to, type, attrs) do
+  @spec set_block_type(
+          transform_map(),
+          integer(),
+          integer() | nil,
+          NodeType.t(),
+          map() | (Node.t() -> map() | nil) | nil
+        ) :: transform_map()
+  def set_block_type(tr, from, to \\ nil, %NodeType{} = type, attrs \\ nil) do
     unless type.is_textblock do
-      raise "Type given to setBlockType should be a textblock"
+      raise ArgumentError, "Type given to set_block_type should be a textblock"
     end
 
+    to = to || from
     map_from = length(tr.steps)
-    Process.put(:_pm_set_block_type_tr, tr)
 
-    Node.nodes_between(tr.doc, from, to, fn node, pos, _parent, _index ->
-      # Read the latest tr from process dict (it gets updated as steps are applied)
-      current_tr = Process.get(:_pm_set_block_type_tr)
-      attrs_here = if is_function(attrs), do: attrs.(node), else: attrs
+    Node.fold_nodes_between(
+      tr.doc,
+      from,
+      to,
+      fn node, pos, _parent, _index, current_tr ->
+        attrs_here = if is_function(attrs), do: attrs.(node), else: attrs
 
-      if Node.is_textblock(node) and not Node.has_markup(node, type, attrs_here) and
-           can_change_type(
-             current_tr.doc,
-             Mapping.map(mapping_from(current_tr.mapping, map_from), pos),
-             type
-           ) do
-        convert_newlines = check_linebreak_conversion(type)
+        if Node.is_textblock(node) and not Node.has_markup(node, type, attrs_here) and
+             can_change_type(
+               current_tr.doc,
+               Mapping.map(mapping_from(current_tr.mapping, map_from), pos),
+               type
+             ) do
+          convert_newlines = check_linebreak_conversion(type)
 
-        # Replace linebreaks -> newlines if converting FROM pre to non-pre
-        current_tr =
-          if convert_newlines == false do
-            replace_linebreaks(current_tr, node, pos, map_from)
-          else
-            current_tr
-          end
+          # Replace linebreaks -> newlines when converting TO a pre block without linebreak_replacement
+          current_tr =
+            if convert_newlines == false do
+              replace_linebreaks(current_tr, node, pos, map_from)
+            else
+              current_tr
+            end
 
-        # Clear incompatible marks/content
-        current_tr =
-          ProsemirrorEx.Transform.Mark.clear_incompatible(
-            current_tr,
-            Mapping.map(mapping_from(current_tr.mapping, map_from), pos, 1),
-            type,
-            nil,
-            convert_newlines == nil
-          )
-
-        mapping = mapping_from(current_tr.mapping, map_from)
-        start_m = Mapping.map(mapping, pos, 1)
-        end_m = Mapping.map(mapping, pos + Node.node_size(node), 1)
-
-        current_tr =
-          Transform.step(
-            current_tr,
-            ReplaceAroundStep.new(
-              start_m,
-              end_m,
-              start_m + 1,
-              end_m - 1,
-              Slice.new(Fragment.from(NodeType.create(type, attrs_here, nil, node.marks)), 0, 0),
-              1,
-              true
+          # Clear incompatible marks/content
+          current_tr =
+            ProsemirrorEx.Transform.Mark.clear_incompatible(
+              current_tr,
+              Mapping.map(mapping_from(current_tr.mapping, map_from), pos, 1),
+              type,
+              nil,
+              convert_newlines == nil
             )
-          )
 
-        # Replace newlines -> linebreaks if converting TO pre-like
-        current_tr =
-          if convert_newlines == true do
-            replace_newlines(current_tr, node, pos, map_from)
-          else
-            current_tr
-          end
+          mapping = mapping_from(current_tr.mapping, map_from)
+          start_m = Mapping.map(mapping, pos, 1)
+          end_m = Mapping.map(mapping, pos + Node.node_size(node), 1)
 
-        # Don't descend into textblocks
-        Process.put(:_pm_set_block_type_tr, current_tr)
-        false
-      else
-        true
-      end
-    end)
+          current_tr =
+            Transform.step(
+              current_tr,
+              ReplaceAroundStep.new(
+                start_m,
+                end_m,
+                start_m + 1,
+                end_m - 1,
+                Slice.new(
+                  Fragment.from(NodeType.create(type, attrs_here, nil, node.marks)),
+                  0,
+                  0
+                ),
+                1,
+                true
+              )
+            )
 
-    # Retrieve the accumulated tr
-    result = Process.get(:_pm_set_block_type_tr, tr)
-    Process.delete(:_pm_set_block_type_tr)
-    result
+          # Replace newlines -> linebreaks when converting FROM pre to non-pre supporting linebreak_replacement
+          current_tr =
+            if convert_newlines == true do
+              replace_newlines(current_tr, node, pos, map_from)
+            else
+              current_tr
+            end
+
+          {:skip, current_tr}
+        else
+          current_tr
+        end
+      end,
+      tr
+    )
   end
 
   defp check_linebreak_conversion(type) do
@@ -396,62 +428,79 @@ defmodule ProsemirrorEx.Transform.Structure do
   end
 
   defp replace_newlines(tr, node, pos, map_from) do
-    Process.put(:_pm_newline_tr, tr)
+    children = if node.content, do: node.content.content, else: []
+    schema = node.type.schema
 
-    Node.for_each(node, fn child, offset, _index ->
-      if Node.is_text(child) do
-        current_tr = Process.get(:_pm_newline_tr)
-        regex = ~r/\r?\n|\r/
+    {result_tr, _offset} =
+      Enum.reduce(children, {tr, 0}, fn child, {tr_acc, offset} ->
+        next_tr =
+          if Node.is_text(child) do
+            case Regex.scan(~r/\r?\n|\r/, child.text, return: :index) do
+              [] ->
+                tr_acc
 
-        updated_tr =
-          Regex.scan(regex, child.text, return: :index)
-          |> List.flatten()
-          |> Enum.reduce(current_tr, fn {idx, _len}, tr_acc ->
-            start = Mapping.map(mapping_from(tr_acc.mapping, map_from), pos + 1 + offset + idx)
-            schema = node.type.schema
+              matches ->
+                {updated_tr, _pb, _pu} =
+                  Enum.reduce(matches, {tr_acc, 0, 0}, fn [{byte_idx, len}],
+                                                          {acc, prev_byte, prev_u16} ->
+                    chunk = binary_part(child.text, prev_byte, byte_idx - prev_byte)
+                    u16_idx = prev_u16 + Utf16.byte_offset_to_utf16(chunk, byte_size(chunk))
+
+                    start =
+                      Mapping.map(
+                        mapping_from(acc.mapping, map_from),
+                        pos + 1 + offset + u16_idx
+                      )
+
+                    new_acc =
+                      Transform.replace_with(
+                        acc,
+                        start,
+                        start + len,
+                        NodeType.create(schema.linebreak_replacement)
+                      )
+
+                    {new_acc, byte_idx + len, u16_idx + len}
+                  end)
+
+                updated_tr
+            end
+          else
+            tr_acc
+          end
+
+        {next_tr, offset + Node.node_size(child)}
+      end)
+
+    result_tr
+  end
+
+  defp replace_linebreaks(tr, node, pos, map_from) do
+    children = if node.content, do: node.content.content, else: []
+
+    {result_tr, _offset} =
+      Enum.reduce(children, {tr, 0}, fn child, {tr_acc, offset} ->
+        schema = child.type.schema
+
+        next_tr =
+          if schema.linebreak_replacement != nil and
+               child.type.name == schema.linebreak_replacement.name do
+            start = Mapping.map(mapping_from(tr_acc.mapping, map_from), pos + 1 + offset)
 
             Transform.replace_with(
               tr_acc,
               start,
               start + 1,
-              NodeType.create(schema.linebreak_replacement)
+              ProsemirrorEx.Model.Schema.text(schema, "\n")
             )
-          end)
+          else
+            tr_acc
+          end
 
-        Process.put(:_pm_newline_tr, updated_tr)
-      end
-    end)
+        {next_tr, offset + Node.node_size(child)}
+      end)
 
-    result = Process.get(:_pm_newline_tr, tr)
-    Process.delete(:_pm_newline_tr)
-    result
-  end
-
-  defp replace_linebreaks(tr, node, pos, map_from) do
-    _tr_ref = Process.put(:_pm_linebreak_tr, tr)
-
-    Node.for_each(node, fn child, offset, _index ->
-      tr_acc = Process.get(:_pm_linebreak_tr)
-      schema = child.type.schema
-
-      if child.type == schema.linebreak_replacement do
-        start = Mapping.map(mapping_from(tr_acc.mapping, map_from), pos + 1 + offset)
-
-        new_tr =
-          Transform.replace_with(
-            tr_acc,
-            start,
-            start + 1,
-            ProsemirrorEx.Model.Schema.text(schema, "\n")
-          )
-
-        Process.put(:_pm_linebreak_tr, new_tr)
-      end
-    end)
-
-    result = Process.get(:_pm_linebreak_tr, tr)
-    Process.delete(:_pm_linebreak_tr)
-    result
+    result_tr
   end
 
   # ── setNodeMarkup ────────────────────────────────────────────────────
@@ -460,11 +509,18 @@ defmodule ProsemirrorEx.Transform.Structure do
   Change the type, attributes, and/or marks of the node at `pos`.
   When `type` is nil, the existing node type is preserved.
   """
-  def set_node_markup(tr, pos, type, attrs, marks) do
+  @spec set_node_markup(
+          transform_map(),
+          integer(),
+          NodeType.t() | nil,
+          map() | nil,
+          [ProsemirrorEx.Model.Mark.t()] | nil
+        ) :: transform_map()
+  def set_node_markup(tr, pos, type \\ nil, attrs \\ nil, marks \\ nil) do
     node = Node.node_at(tr.doc, pos)
 
     unless node do
-      raise "No node at given position"
+      raise ArgumentError, "No node at given position"
     end
 
     type = type || node.type
@@ -474,7 +530,7 @@ defmodule ProsemirrorEx.Transform.Structure do
       Transform.replace_with(tr, pos, pos + Node.node_size(node), new_node)
     else
       unless NodeType.valid_content(type, node.content) do
-        raise "Invalid content for node type #{type.name}"
+        raise TransformError, message: "Invalid content for node type #{type.name}"
       end
 
       Transform.step(
@@ -497,20 +553,17 @@ defmodule ProsemirrorEx.Transform.Structure do
   @doc """
   Check whether splitting at the given position is allowed.
   """
-  def can_split(doc, pos, depth \\ 1, types_after \\ nil) do
+  @spec can_split(Node.t(), integer(), integer(), [node_spec() | NodeType.t() | nil] | nil) ::
+          boolean()
+  def can_split(doc, pos, depth \\ 1, types_after \\ nil)
+
+  def can_split(_doc, _pos, depth, _types_after) when not is_integer(depth) or depth <= 0 do
+    false
+  end
+
+  def can_split(doc, pos, depth, types_after) do
     rpos = Node.resolve(doc, pos)
     base = rpos.depth - depth
-
-    inner_type =
-      if types_after && length(types_after) > 0 do
-        List.last(types_after)
-      else
-        ResolvedPos.parent(rpos)
-      end
-
-    inner_type_struct =
-      if is_map(inner_type) && Map.has_key?(inner_type, :type), do: inner_type, else: inner_type
-
     parent_node = ResolvedPos.parent(rpos)
 
     cond do
@@ -524,18 +577,8 @@ defmodule ProsemirrorEx.Transform.Structure do
         false
 
       true ->
-        # Check inner type valid content
-        inner_node_type =
-          cond do
-            is_map(inner_type_struct) && Map.has_key?(inner_type_struct, :type) ->
-              inner_type_struct.type
-
-            is_map(inner_type_struct) && Map.has_key?(inner_type_struct, :name) ->
-              inner_type_struct.type
-
-            true ->
-              parent_node.type
-          end
+        inner_type = types_after && List.last(types_after)
+        inner_node_type = resolve_node_type(inner_type, parent_node)
 
         rest_content =
           Fragment.cut_by_index(
@@ -552,8 +595,12 @@ defmodule ProsemirrorEx.Transform.Structure do
     end
   end
 
+  defp resolve_node_type(nil, fallback_node), do: fallback_node.type
+  defp resolve_node_type(%NodeType{} = type, _fallback_node), do: type
+  defp resolve_node_type(%{type: %NodeType{} = type}, _fallback_node), do: type
+
   defp check_split_levels(rpos, base, depth, types_after) do
-    result =
+    {ok, _i} =
       Enum.reduce_while((rpos.depth - 1)..(base + 1)//-1, {true, depth - 2}, fn d, {_ok, i} ->
         node = ResolvedPos.node(rpos, d)
         index = ResolvedPos.index(rpos, d)
@@ -570,24 +617,16 @@ defmodule ProsemirrorEx.Transform.Structure do
               Fragment.replace_child(
                 rest,
                 0,
-                NodeType.create(override_child.type, Map.get(override_child, :attrs, nil))
+                NodeType.create(
+                  resolve_node_type(override_child, node),
+                  Map.get(override_child, :attrs, nil)
+                )
               )
             else
               rest
             end
 
-          after_type =
-            if types_after && Enum.at(types_after, i) do
-              Enum.at(types_after, i)
-            else
-              node
-            end
-
-          after_node_type =
-            cond do
-              is_map(after_type) && Map.has_key?(after_type, :type) -> after_type.type
-              true -> node.type
-            end
+          after_node_type = resolve_node_type(types_after && Enum.at(types_after, i), node)
 
           if not Node.can_replace(node, index + 1, Node.child_count(node)) or
                not NodeType.valid_content(after_node_type, rest) do
@@ -598,19 +637,10 @@ defmodule ProsemirrorEx.Transform.Structure do
         end
       end)
 
-    {ok, _i} = result
-
     if ok do
-      # Check the base level
       index = ResolvedPos.index_after(rpos, base)
-      base_type = types_after && Enum.at(types_after, 0)
-
-      base_node_type =
-        if base_type do
-          base_type.type
-        else
-          ResolvedPos.node(rpos, base + 1).type
-        end
+      base_type = types_after && List.first(types_after)
+      base_node_type = resolve_node_type(base_type, ResolvedPos.node(rpos, base + 1))
 
       Node.can_replace_with(ResolvedPos.node(rpos, base), index, index, base_node_type)
     else
@@ -623,6 +653,8 @@ defmodule ProsemirrorEx.Transform.Structure do
   @doc """
   Split the node at the given position, creating new sibling nodes.
   """
+  @spec split(transform_map(), integer(), pos_integer(), [node_spec() | nil] | nil) ::
+          transform_map()
   def split(tr, pos, depth \\ 1, types_after \\ nil) do
     rpos = Node.resolve(tr.doc, pos)
 
@@ -666,6 +698,7 @@ defmodule ProsemirrorEx.Transform.Structure do
   @doc """
   Test whether the blocks before and after a given position can be joined.
   """
+  @spec can_join(Node.t(), integer()) :: boolean()
   def can_join(doc, pos) do
     rpos = Node.resolve(doc, pos)
     index = ResolvedPos.index(rpos)
@@ -682,11 +715,10 @@ defmodule ProsemirrorEx.Transform.Structure do
       schema = a.type.schema
 
       result =
-        Enum.reduce_while(0..(Node.child_count(b) - 1)//1, match, fn i, match_acc ->
-          child = Node.child(b, i)
-
+        Enum.reduce_while(b.content.content, match, fn child, match_acc ->
           type =
-            if schema.linebreak_replacement && child.type == schema.linebreak_replacement do
+            if schema.linebreak_replacement != nil and
+                 child.type.name == schema.linebreak_replacement.name do
               schema.nodes["text"]
             else
               child.type
@@ -694,14 +726,10 @@ defmodule ProsemirrorEx.Transform.Structure do
 
           new_match = ContentMatch.match_type(match_acc, type)
 
-          if new_match == nil do
-            {:halt, nil}
+          if new_match != nil and NodeType.allows_marks(a.type, child.marks || []) do
+            {:cont, new_match}
           else
-            if not NodeType.allows_marks(a.type, child.marks || []) do
-              {:halt, nil}
-            else
-              {:cont, new_match}
-            end
+            {:halt, nil}
           end
         end)
 
@@ -720,6 +748,7 @@ defmodule ProsemirrorEx.Transform.Structure do
   block before (or after if `dir` is positive). Returns the joinable
   point, or nil.
   """
+  @spec join_point(Node.t(), integer(), integer()) :: non_neg_integer() | nil
   def join_point(doc, pos, dir \\ -1) do
     rpos = Node.resolve(doc, pos)
     do_join_point(rpos, rpos.depth, pos, dir)
@@ -764,12 +793,13 @@ defmodule ProsemirrorEx.Transform.Structure do
   @doc """
   Join the blocks around the given position.
   """
+  @spec join(transform_map(), integer(), pos_integer()) :: transform_map()
   def join(tr, pos, depth \\ 1) do
-    schema = tr.doc.type.schema
     before_rpos = Node.resolve(tr.doc, pos - depth)
     before_type = ResolvedPos.node(before_rpos).type
 
-    convert_newlines = check_join_linebreak_conversion(schema, before_type)
+    convert_newlines =
+      if before_type.inline_content, do: check_linebreak_conversion(before_type), else: nil
 
     map_from = length(tr.steps)
 
@@ -812,37 +842,17 @@ defmodule ProsemirrorEx.Transform.Structure do
       )
 
     # Replace newlines -> linebreaks if converting
-    tr =
-      if convert_newlines == true do
-        full_rpos = Node.resolve(tr.doc, start_pos)
+    if convert_newlines == true do
+      full_rpos = Node.resolve(tr.doc, start_pos)
 
-        replace_newlines(
-          tr,
-          ResolvedPos.node(full_rpos),
-          ResolvedPos.before(full_rpos),
-          length(tr.steps)
-        )
-      else
-        tr
-      end
-
-    tr
-  end
-
-  defp check_join_linebreak_conversion(schema, before_type) do
-    if schema.linebreak_replacement && before_type.inline_content do
-      pre = NodeType.whitespace(before_type) == "pre"
-
-      support_linebreak =
-        ContentMatch.match_type(before_type.content_match, schema.linebreak_replacement) != nil
-
-      cond do
-        pre and not support_linebreak -> false
-        not pre and support_linebreak -> true
-        true -> nil
-      end
+      replace_newlines(
+        tr,
+        ResolvedPos.node(full_rpos),
+        ResolvedPos.before(full_rpos),
+        length(tr.steps)
+      )
     else
-      nil
+      tr
     end
   end
 
@@ -854,8 +864,8 @@ defmodule ProsemirrorEx.Transform.Structure do
   isn't a valid place but is at the start or end of a node.
   Returns nil if no position was found.
   """
+  @spec insert_point(Node.t(), integer(), NodeType.t()) :: non_neg_integer() | nil
   def insert_point(doc, pos, node_type) do
-    # Delegate to the existing implementation in Replace module
     ProsemirrorEx.Transform.Replace.insert_point(doc, pos, node_type)
   end
 
@@ -866,6 +876,7 @@ defmodule ProsemirrorEx.Transform.Structure do
   slice can be inserted. Will look at parent nodes' nearest boundary.
   Returns nil when no position was found.
   """
+  @spec drop_point(Node.t(), integer(), Slice.t()) :: non_neg_integer() | nil
   def drop_point(doc, pos, %Slice{} = slice) do
     rpos = Node.resolve(doc, pos)
 

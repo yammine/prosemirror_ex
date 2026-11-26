@@ -14,7 +14,8 @@ defmodule ProsemirrorEx.MixProject do
       deps: deps(),
       description: description(),
       package: package(),
-      source_url: @source_url
+      source_url: @source_url,
+      docs: docs()
     ]
   end
 
@@ -34,6 +35,67 @@ defmodule ProsemirrorEx.MixProject do
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
       files: ~w(lib mix.exs README.md LICENSE)
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: ["README.md"],
+      source_ref: "v#{@version}",
+      source_url: @source_url,
+      groups_for_modules: [
+        "Document Model": [
+          ProsemirrorEx.Model,
+          ProsemirrorEx.Model.Schema,
+          ProsemirrorEx.Model.Node,
+          ProsemirrorEx.Model.Fragment,
+          ProsemirrorEx.Model.Mark,
+          ProsemirrorEx.Model.NodeType,
+          ProsemirrorEx.Model.MarkType,
+          ProsemirrorEx.Model.ContentMatch,
+          ProsemirrorEx.Model.ResolvedPos,
+          ProsemirrorEx.Model.Slice,
+          ProsemirrorEx.Model.NodeRange,
+          ProsemirrorEx.Model.Replace,
+          ProsemirrorEx.Model.Diff,
+          ProsemirrorEx.Model.CompareDeep,
+          ProsemirrorEx.Model.Utf16,
+          ProsemirrorEx.Model.RangeError,
+          ProsemirrorEx.Model.ReplaceError
+        ],
+        "Document Transforms": [
+          ProsemirrorEx.Transform.Transform,
+          ProsemirrorEx.Transform.Step,
+          ProsemirrorEx.Transform.StepResult,
+          ProsemirrorEx.Transform.StepMap,
+          ProsemirrorEx.Transform.Mapping,
+          ProsemirrorEx.Transform.Mappable,
+          ProsemirrorEx.Transform.MapResult,
+          ProsemirrorEx.Transform.ReplaceStep,
+          ProsemirrorEx.Transform.ReplaceAroundStep,
+          ProsemirrorEx.Transform.AddMarkStep,
+          ProsemirrorEx.Transform.RemoveMarkStep,
+          ProsemirrorEx.Transform.AddNodeMarkStep,
+          ProsemirrorEx.Transform.RemoveNodeMarkStep,
+          ProsemirrorEx.Transform.AttrStep,
+          ProsemirrorEx.Transform.DocAttrStep,
+          ProsemirrorEx.Transform.Replace,
+          ProsemirrorEx.Transform.Structure,
+          ProsemirrorEx.Transform.Mark,
+          ProsemirrorEx.Transform.StepRegistry,
+          ProsemirrorEx.Transform.TransformError
+        ],
+        "Convenience Schemas": [
+          ProsemirrorEx.Schema,
+          ProsemirrorEx.Schema.Basic,
+          ProsemirrorEx.Schema.List
+        ],
+        "Collaborative Authority": [
+          ProsemirrorEx.Authority,
+          ProsemirrorEx.Authority.Server
+        ]
+      ]
     ]
   end
 

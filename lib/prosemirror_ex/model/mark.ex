@@ -9,6 +9,7 @@ defmodule ProsemirrorEx.Model.Mark do
 
   alias ProsemirrorEx.Model.CompareDeep
   alias ProsemirrorEx.Model.MarkType
+  alias ProsemirrorEx.Model.Schema
 
   defstruct [:type, attrs: %{}]
 
@@ -39,50 +40,37 @@ defmodule ProsemirrorEx.Model.Mark do
   """
   @spec add_to_set(t(), [t()]) :: [t()]
   def add_to_set(%__MODULE__{} = mark, set) when is_list(set) do
-    result =
-      Enum.reduce_while(Enum.with_index(set), {nil, false}, fn {other, i}, {copy, placed} ->
-        cond do
-          eq(mark, other) ->
-            {:halt, {:return, set}}
+    case do_add_to_set(set, mark, false) do
+      :return_original -> set
+      new_set -> new_set
+    end
+  end
 
-          MarkType.excludes(mark.type, other.type) ->
-            new_copy = if copy, do: copy, else: Enum.take(set, i)
-            {:cont, {new_copy, placed}}
+  defp do_add_to_set([], _mark, true), do: []
+  defp do_add_to_set([], mark, false), do: [mark]
 
-          MarkType.excludes(other.type, mark.type) ->
-            {:halt, {:return, set}}
+  defp do_add_to_set([other | rest], mark, placed) do
+    cond do
+      eq(mark, other) ->
+        :return_original
 
-          true ->
-            if !placed and other.type.rank > mark.type.rank do
-              c = if copy, do: copy, else: Enum.take(set, i)
-              {:cont, {c ++ [mark, other], true}}
-            else
-              if copy do
-                {:cont, {copy ++ [other], placed}}
-              else
-                {:cont, {nil, placed}}
-              end
-            end
+      MarkType.excludes(mark.type, other.type) ->
+        do_add_to_set(rest, mark, placed)
+
+      MarkType.excludes(other.type, mark.type) ->
+        :return_original
+
+      not placed and other.type.rank > mark.type.rank ->
+        case do_add_to_set(rest, mark, true) do
+          :return_original -> :return_original
+          tail -> [mark, other | tail]
         end
-      end)
 
-    case result do
-      {:return, original} ->
-        original
-
-      {nil, false} ->
-        # No copy, not placed: just append
-        set ++ [mark]
-
-      {copy, false} when is_list(copy) ->
-        # Copy started but not placed: append mark
-        copy ++ [mark]
-
-      {copy, true} when is_list(copy) ->
-        # Copy started and placed: need to append remaining elements
-        # But wait - reduce_while processes all elements, so remaining
-        # non-excluded elements are already in copy. Just return it.
-        copy
+      true ->
+        case do_add_to_set(rest, mark, placed) do
+          :return_original -> :return_original
+          tail -> [other | tail]
+        end
     end
   end
 
@@ -92,9 +80,22 @@ defmodule ProsemirrorEx.Model.Mark do
   """
   @spec remove_from_set(t(), [t()]) :: [t()]
   def remove_from_set(%__MODULE__{} = mark, set) when is_list(set) do
-    case Enum.find_index(set, fn other -> eq(mark, other) end) do
-      nil -> set
-      idx -> List.delete_at(set, idx)
+    case do_remove_from_set(set, mark) do
+      :not_found -> set
+      new_set -> new_set
+    end
+  end
+
+  defp do_remove_from_set([], _mark), do: :not_found
+
+  defp do_remove_from_set([other | rest], mark) do
+    if eq(mark, other) do
+      rest
+    else
+      case do_remove_from_set(rest, mark) do
+        :not_found -> :not_found
+        tail -> [other | tail]
+      end
     end
   end
 
@@ -112,13 +113,16 @@ defmodule ProsemirrorEx.Model.Mark do
   """
   @spec same_set([t()], [t()]) :: boolean()
   def same_set(a, b) when is_list(a) and is_list(b) do
-    if a == b do
+    if a === b do
       true
     else
-      length(a) == length(b) and
-        Enum.zip(a, b) |> Enum.all?(fn {m1, m2} -> eq(m1, m2) end)
+      do_same_set(a, b)
     end
   end
+
+  defp do_same_set([], []), do: true
+  defp do_same_set([m1 | r1], [m2 | r2]), do: eq(m1, m2) and do_same_set(r1, r2)
+  defp do_same_set(_, _), do: false
 
   @doc """
   Create a properly sorted mark set from null, a single mark, or an unsorted
@@ -127,17 +131,10 @@ defmodule ProsemirrorEx.Model.Mark do
   @spec set_from([t()] | t() | nil) :: [t()]
   def set_from(nil), do: none()
   def set_from([]), do: none()
+  def set_from([_mark] = marks), do: marks
 
   def set_from(marks) when is_list(marks) do
-    if length(marks) == 1 do
-      marks
-    else
-      marks
-      |> Enum.sort_by(fn %__MODULE__{type: type} -> type.rank end)
-      |> then(fn sorted ->
-        Enum.reduce(sorted, [], fn mark, acc -> add_to_set(mark, acc) end)
-      end)
-    end
+    Enum.sort_by(marks, fn %__MODULE__{type: type} -> type.rank end)
   end
 
   def set_from(%__MODULE__{} = mark), do: [mark]
@@ -161,17 +158,29 @@ defmodule ProsemirrorEx.Model.Mark do
 
   Takes a schema and a JSON map with `"type"` and optionally `"attrs"` keys.
   """
-  def from_json(schema, json) do
-    if !json, do: raise("Invalid input for Mark.fromJSON")
+  @spec from_json(Schema.t(), map()) :: t()
+  def from_json(schema, json) when is_map(json) and not is_struct(json) do
+    type_name = json["type"]
 
-    type = schema.marks[json["type"]]
+    if not is_binary(type_name) do
+      raise "Invalid input for Mark.fromJSON"
+    end
 
-    if !type,
-      do: raise("There is no mark type #{json["type"]} in this schema")
+    type = Map.get(schema.marks, type_name)
 
-    mark = MarkType.create(type, json["attrs"])
+    if !type do
+      raise "There is no mark type #{type_name} in this schema"
+    end
+
+    raw_attrs = json["attrs"]
+    MarkType.check_attrs_map(type, raw_attrs)
+    mark = MarkType.create(type, raw_attrs)
     MarkType.check_attrs(type, mark.attrs)
     mark
+  end
+
+  def from_json(_schema, _json) do
+    raise "Invalid input for Mark.fromJSON"
   end
 
   @doc """

@@ -9,7 +9,11 @@ defmodule CollabDemoWeb.DocChannel do
   end
 
   @impl true
-  def handle_in("steps", %{"version" => version, "steps" => steps, "clientID" => client_id}, socket) do
+  def handle_in(
+        "steps",
+        %{"version" => version, "steps" => steps, "clientID" => client_id},
+        socket
+      ) do
     case CollabDemo.DocServer.receive_steps(client_id, version, steps) do
       {:ok, new_version} ->
         {:reply, {:ok, %{"version" => new_version}}, socket}
@@ -29,6 +33,12 @@ defmodule CollabDemoWeb.DocChannel do
           _ ->
             {:reply, {:error, %{"reason" => "version_mismatch"}}, socket}
         end
+
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => Atom.to_string(reason)}}, socket}
+
+      {:error, reason, message} ->
+        {:reply, {:error, %{"reason" => Atom.to_string(reason), "message" => message}}, socket}
     end
   end
 

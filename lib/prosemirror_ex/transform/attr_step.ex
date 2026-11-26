@@ -7,8 +7,8 @@ defmodule ProsemirrorEx.Transform.AttrStep do
 
   @behaviour ProsemirrorEx.Transform.Step
 
-  alias ProsemirrorEx.Model.{Slice, Fragment, Node}
-  alias ProsemirrorEx.Transform.{StepMap, StepResult, Mappable, MapResult}
+  alias ProsemirrorEx.Model.{Fragment, Node, NodeType, Schema, Slice}
+  alias ProsemirrorEx.Transform.{Mappable, MapResult, Step, StepMap, StepResult}
 
   defstruct [:pos, :attr, :value]
 
@@ -19,52 +19,60 @@ defmodule ProsemirrorEx.Transform.AttrStep do
         }
 
   @doc "Create a new AttrStep."
+  @spec new(non_neg_integer(), String.t(), any()) :: t()
   def new(pos, attr, value) do
     %__MODULE__{pos: pos, attr: attr, value: value}
   end
 
   @impl true
+  @spec apply(t(), Node.t()) :: StepResult.t()
   def apply(%__MODULE__{} = step, doc) do
     node = Node.node_at(doc, step.pos)
 
-    if !node do
-      StepResult.fail("No node at attribute step's position")
-    else
-      attrs =
-        node.attrs
-        |> Kernel.||(%{})
-        |> Map.put(step.attr, step.value)
+    cond do
+      is_nil(node) ->
+        StepResult.fail("No node at attribute step's position")
 
-      updated =
-        ProsemirrorEx.Model.NodeType.create(
-          node.type,
-          attrs,
-          nil,
-          node.marks
+      Node.is_text(node) ->
+        StepResult.fail("Cannot apply attribute step to a text node")
+
+      true ->
+        attrs =
+          node.attrs
+          |> Kernel.||(%{})
+          |> Map.put(step.attr, step.value)
+
+        updated =
+          NodeType.create(
+            node.type,
+            attrs,
+            nil,
+            node.marks
+          )
+
+        StepResult.from_replace(
+          doc,
+          step.pos,
+          step.pos + 1,
+          Slice.new(Fragment.from(updated), 0, if(Node.is_leaf(node), do: 0, else: 1))
         )
-
-      StepResult.from_replace(
-        doc,
-        step.pos,
-        step.pos + 1,
-        Slice.new(Fragment.from(updated), 0, if(Node.is_leaf(node), do: 0, else: 1))
-      )
     end
   end
 
   @impl true
+  @spec invert(t(), Node.t()) :: t()
   def invert(%__MODULE__{} = step, doc) do
     node = Node.node_at(doc, step.pos)
-    old_value = (node.attrs || %{})[step.attr]
+    old_value = if node, do: (node.attrs || %{})[step.attr], else: nil
     new(step.pos, step.attr, old_value)
   end
 
   @impl true
-  def step_map(_step) do
-    StepMap.empty()
-  end
+  @spec step_map(t()) :: StepMap.t()
+  def step_map(_step), do: StepMap.empty()
 
   @impl true
+  @spec map(t(), Mappable.t()) :: t() | nil
   def map(%__MODULE__{} = step, mapping) do
     pos = Mappable.map_result(mapping, step.pos, 1)
 
@@ -76,9 +84,11 @@ defmodule ProsemirrorEx.Transform.AttrStep do
   end
 
   @impl true
+  @spec merge(t(), Step.step()) :: nil
   def merge(_step, _other), do: nil
 
   @impl true
+  @spec to_json(t()) :: map()
   def to_json(%__MODULE__{} = step) do
     %{
       "stepType" => "attr",
@@ -89,12 +99,17 @@ defmodule ProsemirrorEx.Transform.AttrStep do
   end
 
   @impl true
+  @spec from_json(Schema.t() | nil, map()) :: t()
   def from_json(_schema, json) do
-    unless is_number(json["pos"]) and is_binary(json["attr"]) do
+    Step.validate_json_map!(json, "AttrStep")
+    pos = Step.parse_non_neg_int!(json, "pos", "AttrStep")
+    attr = json["attr"]
+
+    unless is_binary(attr) do
       raise ArgumentError, "Invalid input for AttrStep.fromJSON"
     end
 
-    new(json["pos"], json["attr"], json["value"])
+    new(pos, attr, json["value"])
   end
 end
 
@@ -107,7 +122,8 @@ defmodule ProsemirrorEx.Transform.DocAttrStep do
 
   @behaviour ProsemirrorEx.Transform.Step
 
-  alias ProsemirrorEx.Transform.{StepMap, StepResult}
+  alias ProsemirrorEx.Model.{Node, NodeType, Schema}
+  alias ProsemirrorEx.Transform.{Mappable, Step, StepMap, StepResult}
 
   defstruct [:attr, :value]
 
@@ -117,11 +133,13 @@ defmodule ProsemirrorEx.Transform.DocAttrStep do
         }
 
   @doc "Create a new DocAttrStep."
+  @spec new(String.t(), any()) :: t()
   def new(attr, value) do
     %__MODULE__{attr: attr, value: value}
   end
 
   @impl true
+  @spec apply(t(), Node.t()) :: StepResult.t()
   def apply(%__MODULE__{} = step, doc) do
     attrs =
       doc.attrs
@@ -129,7 +147,7 @@ defmodule ProsemirrorEx.Transform.DocAttrStep do
       |> Map.put(step.attr, step.value)
 
     updated =
-      ProsemirrorEx.Model.NodeType.create(
+      NodeType.create(
         doc.type,
         attrs,
         doc.content,
@@ -140,25 +158,26 @@ defmodule ProsemirrorEx.Transform.DocAttrStep do
   end
 
   @impl true
+  @spec invert(t(), Node.t()) :: t()
   def invert(%__MODULE__{} = step, doc) do
     old_value = (doc.attrs || %{})[step.attr]
     new(step.attr, old_value)
   end
 
   @impl true
-  def step_map(_step) do
-    StepMap.empty()
-  end
+  @spec step_map(t()) :: StepMap.t()
+  def step_map(_step), do: StepMap.empty()
 
   @impl true
-  def map(%__MODULE__{} = step, _mapping) do
-    step
-  end
+  @spec map(t(), Mappable.t()) :: t()
+  def map(%__MODULE__{} = step, _mapping), do: step
 
   @impl true
+  @spec merge(t(), Step.step()) :: nil
   def merge(_step, _other), do: nil
 
   @impl true
+  @spec to_json(t()) :: map()
   def to_json(%__MODULE__{} = step) do
     %{
       "stepType" => "docAttr",
@@ -168,11 +187,15 @@ defmodule ProsemirrorEx.Transform.DocAttrStep do
   end
 
   @impl true
+  @spec from_json(Schema.t() | nil, map()) :: t()
   def from_json(_schema, json) do
-    unless is_binary(json["attr"]) do
+    Step.validate_json_map!(json, "DocAttrStep")
+    attr = json["attr"]
+
+    unless is_binary(attr) do
       raise ArgumentError, "Invalid input for DocAttrStep.fromJSON"
     end
 
-    new(json["attr"], json["value"])
+    new(attr, json["value"])
   end
 end

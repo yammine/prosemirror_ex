@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     name: Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
 
     strategy:
       fail-fast: false
@@ -37,6 +37,8 @@ jobs:
             otp: "26.2.5"
           - elixir: "1.17.3"
             otp: "25.3.2"
+            # builds.hex.pm does not provide OTP 25 builds for Ubuntu 26.04
+            os: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -59,13 +61,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: _build
-          key: build-${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('mix.lock') }}-${{ hashFiles('lib/**/*.ex') }}
+          key: build-${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('mix.lock', 'mix.exs') }}-${{ hashFiles('lib/**/*.ex', 'test/support/**/*.ex') }}
           restore-keys: |
-            build-${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('mix.lock') }}-
+            build-${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('mix.lock', 'mix.exs') }}-
             build-${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-
 
       - name: Install dependencies
         run: mix deps.get
+
+      - name: Check formatting
+        run: mix format --check-formatted
 
       - name: Compile
         run: mix compile --warnings-as-errors

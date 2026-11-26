@@ -933,9 +933,9 @@ defmodule ProsemirrorEx.Model.NodeTest do
     end
   end
 
-  # ── stubs ─────────────────────────────────────────────────────────────
+  # ── resolve, slice, and from_json ────────────────────────────────────
 
-  describe "stubs" do
+  describe "resolve, slice, and from_json" do
     test "resolve works" do
       node = doc([para([txt("hello")])])
       resolved = PmNode.resolve(node, 0)
@@ -963,6 +963,95 @@ defmodule ProsemirrorEx.Model.NodeTest do
       assert_raise RuntimeError, ~r/Invalid input/, fn ->
         PmNode.from_json(%{nodes: %{}, marks: %{}}, nil)
       end
+    end
+  end
+
+  describe "nil content, spec keys, boundary, and escaping edge cases" do
+    test "Schema.text node and text node with content: nil work across all Node accessors" do
+      schema = ProsemirrorEx.TestHelpers.test_schema()
+      schema_t = ProsemirrorEx.Model.Schema.text(schema, "hello")
+      assert schema_t.content == Fragment.empty()
+      t = %{schema_t | content: nil}
+
+      assert PmNode.node_size(t) == 5
+      assert PmNode.child_count(t) == 0
+      assert PmNode.children(t) == []
+      assert PmNode.maybe_child(t, 0) == nil
+      assert PmNode.first_child(t) == nil
+      assert PmNode.last_child(t) == nil
+      assert PmNode.for_each(t, fn _, _, _ -> flunk("should not iterate") end) == :ok
+
+      assert PmNode.nodes_between(t, 0, 5, fn _, _, _, _ -> flunk("should not iterate") end) ==
+               :ok
+
+      assert PmNode.descendants(t, fn _, _, _, _ -> flunk("should not iterate") end) == :ok
+      assert PmNode.fold_nodes_between(t, 0, 5, fn _, _, _, _, acc -> acc end, :ok) == :ok
+      assert PmNode.fold_descendants(t, :ok, fn _, _, _, _, acc -> acc end) == :ok
+      assert PmNode.text_between(t, 1, 4) == "ell"
+      assert PmNode.child_after(t, 0) == {nil, 0, 0}
+      assert PmNode.child_before(t, 0) == {nil, 0, 0}
+      assert PmNode.copy(t) == t
+      assert PmNode.copy(t, nil) == t
+    end
+
+    test "supports string and atom spec keys for leafText and toDebugString and nil spec" do
+      str_leaf_type = %{
+        name: "str_leaf",
+        is_leaf: true,
+        is_text: false,
+        is_block: true,
+        is_inline: false,
+        spec: %{
+          "leafText" => fn _n -> "[str-leaf]" end,
+          "toDebugString" => fn _n -> "<str-leaf>" end
+        }
+      }
+
+      bin_leaf_type = %{str_leaf_type | spec: %{"leafText" => "[bin-leaf]"}}
+      nil_spec_type = %{str_leaf_type | spec: nil}
+
+      n1 = %PmNode{type: str_leaf_type, attrs: %{}, marks: []}
+      n2 = %PmNode{type: bin_leaf_type, attrs: %{}, marks: []}
+      n3 = %PmNode{type: nil_spec_type, attrs: %{}, marks: []}
+
+      assert PmNode.text_content(n1) == "[str-leaf]"
+      assert PmNode.debug_string(n1) == "<str-leaf>"
+      assert PmNode.text_content(n2) == "[bin-leaf]"
+      assert PmNode.text_content(n3) == ""
+      assert PmNode.debug_string(n3) == "str_leaf"
+    end
+
+    test "cut, text_between, slice, mark(nil), replace(nil), can_replace with start/end_val, and escape_string" do
+      t = txt("hello")
+      assert PmNode.cut(t, 4, 2).text == ""
+      assert PmNode.text_between(t, 4, 2) == ""
+
+      p_node = para([t])
+      assert PmNode.cut(p_node, 4, 2).content.size == 0
+      assert PmNode.text_between(p_node, 4, 2) == ""
+
+      d = doc([p_node])
+      empty_slice = PmNode.slice(d, 5, 2)
+      assert ProsemirrorEx.Model.Slice.eq(empty_slice, ProsemirrorEx.Model.Slice.empty())
+
+      marked = txt("hi", [em_mark()])
+      unmarked = PmNode.mark(marked, nil)
+      assert unmarked.marks == []
+
+      {d2, _} = ProsemirrorEx.TestHelpers.doc([ProsemirrorEx.TestHelpers.p(["abc"])])
+      replaced = PmNode.replace(d2, 2, nil, ProsemirrorEx.Model.Node.slice(d2, 1, 2))
+      assert PmNode.text_content(replaced) == "aabc"
+
+      schema = ProsemirrorEx.TestHelpers.test_schema()
+      {d3, _} = ProsemirrorEx.TestHelpers.doc([ProsemirrorEx.TestHelpers.p(["ok"])])
+      p_new = ProsemirrorEx.Model.Schema.node(schema, "paragraph")
+      bad_text = ProsemirrorEx.Model.Schema.text(schema, "bad")
+      frag = Fragment.from_array([bad_text, p_new])
+      refute PmNode.can_replace(d3, 0, 1, frag, 0, 1)
+      assert PmNode.can_replace(d3, 0, 1, frag, 1, 2)
+
+      ctrl = txt("a\b\f\x01z")
+      assert PmNode.debug_string(ctrl) == "\"a\\b\\f\\u0001z\""
     end
   end
 

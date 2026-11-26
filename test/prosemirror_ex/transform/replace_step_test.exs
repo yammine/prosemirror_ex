@@ -243,6 +243,60 @@ defmodule ProsemirrorEx.Transform.ReplaceStepTest do
       result2 = ReplaceStep.apply(mapped, doc_node)
       assert result2.failed == nil
     end
+
+    test "merges with non-zero outer open_start / open_end and backward merges with content" do
+      schema = test_schema()
+      {p1, _} = p(["ab"])
+      {p2, _} = p(["cd"])
+      {p3, _} = p(["ef"])
+
+      # Forward merge where step1 has open_start = 1, open_end = 0 and step2 has open_start = 0, open_end = 1
+      s1 = Slice.new(Fragment.from(p1), 1, 0)
+      s2 = Slice.new(Fragment.from(p2), 0, 1)
+      step1 = ReplaceStep.new(2, 2, s1)
+      step2 = ReplaceStep.new(2 + Slice.size(s1), 2 + Slice.size(s1), s2)
+      merged = ReplaceStep.merge(step1, step2)
+      assert merged != nil
+      assert merged.slice.open_start == 1
+      assert merged.slice.open_end == 1
+
+      # Does not merge when touching seam is open (step1.open_end > 0 or step2.open_start > 0)
+      open_s1 = Slice.new(Fragment.from(p1), 0, 1)
+      step_open = ReplaceStep.new(2, 2, open_s1)
+      step_after = ReplaceStep.new(2 + Slice.size(open_s1), 2 + Slice.size(open_s1), s2)
+      assert ReplaceStep.merge(step_open, step_after) == nil
+
+      # Backward merge with content (other.to == step.from)
+      t1 = Schema.text(schema, "world")
+      t2 = Schema.text(schema, "hello ")
+      step_later = ReplaceStep.new(6, 8, Slice.new(Fragment.from(t1), 0, 0))
+      step_earlier = ReplaceStep.new(2, 6, Slice.new(Fragment.from(t2), 0, 0))
+      back_merged = ReplaceStep.merge(step_later, step_earlier)
+      assert back_merged != nil
+      assert back_merged.from == 2
+      assert back_merged.to == 8
+
+      assert Node.text_between(
+               Schema.node(schema, "paragraph", nil, back_merged.slice.content),
+               0,
+               11
+             ) == "hello world"
+
+      # Backward merge with open_start on earlier and open_end on later
+      b1 = Slice.new(Fragment.from(p3), 0, 1)
+      b2 = Slice.new(Fragment.from(p2), 1, 0)
+      assert ReplaceStep.merge(ReplaceStep.new(5, 7, b1), ReplaceStep.new(2, 5, b2)) != nil
+    end
+
+    test "apply returns fail for out-of-bounds positions" do
+      {doc_node, _} = doc([p(["hello"])])
+      assert ReplaceStep.apply(ReplaceStep.new(-1, 2, Slice.empty()), doc_node).failed != nil
+      assert ReplaceStep.apply(ReplaceStep.new(0, 999, Slice.empty()), doc_node).failed != nil
+      assert ReplaceStep.apply(ReplaceStep.new(4, 2, Slice.empty()), doc_node).failed != nil
+
+      assert ReplaceStep.apply(ReplaceStep.new(0, 999, Slice.empty(), true), doc_node).failed !=
+               nil
+    end
   end
 
   describe "ReplaceAroundStep" do
@@ -342,6 +396,51 @@ defmodule ProsemirrorEx.Transform.ReplaceStepTest do
       step = ReplaceAroundStep.new(0, 7, 1, 6, Slice.empty(), 0)
       result = ReplaceAroundStep.apply(step, doc_node)
       assert result.failed != nil
+    end
+
+    test "structure replace around fails when content exists between gap_to and to" do
+      {doc_node, _} = doc([p(["hello"]), p(["world"])])
+      step = ReplaceAroundStep.new(0, 14, 0, 7, Slice.empty(), 0, true)
+      result = ReplaceAroundStep.apply(step, doc_node)
+      assert result.failed != nil
+    end
+
+    test "apply returns fail for out-of-bounds positions" do
+      {doc_node, _} = doc([p(["hello"])])
+
+      assert ReplaceAroundStep.apply(
+               ReplaceAroundStep.new(0, 99, 0, 7, Slice.empty(), 0),
+               doc_node
+             ).failed != nil
+    end
+
+    test "map returns nil when gap collapses outside mapped from..to" do
+      step = ReplaceAroundStep.new(2, 10, 4, 8, Slice.empty(), 0)
+
+      # Delete 2..5 (collapses from..gap_from cleanly? Wait: delete 4..9 so gap_from maps to 4, gap_to maps to 4, wait:
+      # If deletion is 1..6 (pos 2->1 with assoc 1, pos 4->1? No, pos 4 with assoc -1 -> 1; what if 0..5 is deleted and 7..12?))
+      # Deletion 3..11: from=2->2, to=10->3 (assoc -1 -> 3), gap_from=4->3 (assoc -1), gap_to=8->11? No, 8 maps to 3 (assoc 1 -> 3).
+      # Better: delete 1..5 -> from=2 maps to 1, gap_from=4 maps to 1; insert at 2?
+      # Delete 3..9: from=2->2, to=10->4, gap_from=4->3 (Wait: 4 with assoc -1 -> 3), wait if from=2, gap_from=2, to=10, gap_to=8:
+      # Actually: if step has from=2, gap_from=3, gap_to=7, to=8, and map deletes 1..4 [1, 3, 0]:
+      # from (2, +1) -> 1? No, 2 is inside [1,4], so from=1, gap_from(3,-1)->1.
+      # To get gap_from < from.pos: insert at 2? No, from=2(+1)->5, gap_from=3(-1)->6?
+      # Delete [2, 3, 0]: from=2(+1)->2, gap_from=3(-1)->2.
+      # What if map is [0, 5, 0] (deletes 0..5) and step is (2, 10, 4, 8):
+      # Wait: from=2(+1)->0, gap_from=4(-1)->0.
+      # What if step is (2, 10, 3, 8) and map is [2, 1, 2] (replaces 2..3 with size 2):
+      # from=2(+1)->2, gap_from=3(-1)->4! That's >=.
+      # What if map is [2, 2, 0] and step has from=2, gap_from=3, gap_to=7, to=10, followed by [3, 0, 5]?:
+      # Wait: if mapping has [2, 0, 4] (pure insertion at 2) and step has from=2, gap_from=3... no, 3>2 so 3->7.
+      # How does gap_from < from.pos happen?
+      # When from == 2 (assoc +1 -> moves AFTER insertion at 2 -> 6) and gap_from == 2? No, if from == gap_from, code sets gap_from = from.pos!
+      # Wait: if from=2, gap_from=3, and map deletes 2..4 [2, 2, 0]: from(2, +1) -> 2, gap_from(3, -1) -> 2. Still equal.
+      # What if map is [1, 4, 5] (replaces 1..5 with size 5):
+      # from=2 (inside 1..5, assoc +1) -> 1 + 5 = 6!
+      # gap_from=3 (inside 1..5, assoc -1) -> 1 + 0 = 1!
+      # Now gap_from (1) < from.pos (6)! -> returns nil!
+      map = StepMap.new([1, 4, 5])
+      assert ReplaceAroundStep.map(step, map) == nil
     end
   end
 end
