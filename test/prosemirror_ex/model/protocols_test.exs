@@ -66,6 +66,16 @@ defmodule ProsemirrorEx.Model.ProtocolsTest do
       assert result =~ "("
       assert result =~ ","
     end
+
+    test "ResolvedPos and NodeRange inspect" do
+      {doc_node, _} = doc([p(["hello"])])
+      r1 = Node.resolve(doc_node, 2)
+      r2 = Node.resolve(doc_node, 4)
+      range = ProsemirrorEx.Model.ResolvedPos.block_range(r1, r2)
+
+      assert inspect(r1) == "paragraph_0:1"
+      assert inspect(range) =~ "<NodeRange"
+    end
   end
 
   describe "String.Chars protocol" do
@@ -102,6 +112,20 @@ defmodule ProsemirrorEx.Model.ProtocolsTest do
       slice = Node.slice(doc_node, 1, 6)
       result = Kernel.to_string(slice)
       assert is_binary(result)
+    end
+
+    test "Mark, ResolvedPos, and NodeRange to_string" do
+      schema = test_schema()
+      em_mark = MarkType.create(schema.marks["em"])
+      assert Kernel.to_string(em_mark) == "em"
+
+      {doc_node, _} = doc([p(["hello"])])
+      r1 = Node.resolve(doc_node, 2)
+      r2 = Node.resolve(doc_node, 4)
+      range = ProsemirrorEx.Model.ResolvedPos.block_range(r1, r2)
+
+      assert Kernel.to_string(r1) == "paragraph_0:1"
+      assert Kernel.to_string(range) =~ "<NodeRange"
     end
   end
 

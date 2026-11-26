@@ -667,4 +667,98 @@ defmodule ProsemirrorEx.Model.FragmentTest do
       assert Fragment.child(result2, 0).text == "ab"
     end
   end
+
+  describe "fold_nodes_between/7 and re-entrant text_between/5" do
+    test "fold_nodes_between supports :skip and :halt" do
+      p1 = para_node([text_node("ab")])
+      p2 = para_node([text_node("cd")])
+      frag = Fragment.from_array([p1, p2])
+
+      # Skip children of first para
+      seen =
+        Fragment.fold_nodes_between(
+          frag,
+          0,
+          frag.size,
+          fn node, _pos, _parent, _idx, acc ->
+            if node.type.name == "paragraph" do
+              {:skip, [node.type.name | acc]}
+            else
+              [node.text | acc]
+            end
+          end,
+          []
+        )
+
+      assert Enum.reverse(seen) == ["paragraph", "paragraph"]
+
+      # Halt immediately on first text node
+      halted =
+        Fragment.fold_nodes_between(
+          frag,
+          0,
+          frag.size,
+          fn node, _pos, _parent, _idx, acc ->
+            if PmNode.is_text(node) do
+              {:halt, node.text}
+            else
+              acc
+            end
+          end,
+          nil
+        )
+
+      assert halted == "ab"
+    end
+
+    test "re-entrant Fragment.text_between inside leaf_text does not corrupt outer call" do
+      tb_type = Map.put(para_type(), :is_textblock, true)
+
+      p_before = %PmNode{
+        type: tb_type,
+        attrs: %{},
+        content: Fragment.from(text_node("before")),
+        marks: []
+      }
+
+      p_inner = %PmNode{
+        type: tb_type,
+        attrs: %{},
+        content: Fragment.from(text_node("inner")),
+        marks: []
+      }
+
+      p_after = %PmNode{
+        type: tb_type,
+        attrs: %{},
+        content: Fragment.from(text_node("after")),
+        marks: []
+      }
+
+      leaf_type = %{
+        hr_type()
+        | spec: %{
+            "leafText" => fn _n ->
+              Fragment.text_between(
+                Fragment.from(p_inner),
+                0,
+                p_inner.content.size + 2,
+                "|"
+              )
+            end
+          }
+      }
+
+      leaf = %PmNode{type: leaf_type, attrs: %{}, content: Fragment.empty(), marks: []}
+      frag = Fragment.from_array([p_before, leaf, p_after])
+
+      assert Fragment.text_between(frag, 0, frag.size, "\n") == "before\ninner\nafter"
+    end
+
+    test "text_between returns empty string when to <= from" do
+      frag = Fragment.from_array([para_node([text_node("hello")])])
+      assert Fragment.text_between(frag, 4, 2, "\n") == ""
+      assert Fragment.text_between(frag, 2, 2, "\n") == ""
+    end
+  end
 end

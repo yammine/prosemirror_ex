@@ -707,7 +707,7 @@ defmodule ProsemirrorEx.Model.ResolvedPosTest do
   end
 
   defp assert_node_match(node, nil, msg) do
-    assert node == nil, "#{msg}: expected nil, got a node"
+    flunk("#{msg}: expected nil, got #{inspect(node)}")
   end
 
   # Build custom schema and document for non-inclusive mark tests
@@ -756,5 +756,40 @@ defmodule ProsemirrorEx.Model.ResolvedPosTest do
     custom_doc = NodeType.create(doc_type, nil, [p1, p2, p3])
 
     {schema, custom_doc}
+  end
+
+  describe "ResolvedPos edge cases" do
+    test "resolve/2 rejects non-integers" do
+      d = test_doc()
+      assert_raise ArgumentError, fn -> ResolvedPos.resolve(d, 1.5) end
+      assert_raise ArgumentError, fn -> ResolvedPos.resolve(d, "1") end
+    end
+
+    test "resolve_depth/2 rejects negative overflow and positive overflow" do
+      d = test_doc()
+      rpos = Node.resolve(d, 2)
+      assert_raise ArgumentError, fn -> ResolvedPos.resolve_depth(rpos, -10) end
+      assert_raise ArgumentError, fn -> ResolvedPos.resolve_depth(rpos, rpos.depth + 2) end
+      assert_raise ArgumentError, fn -> ResolvedPos.node(rpos, rpos.depth + 1) end
+    end
+
+    test "to_string/1 formats depth 0 and nested positions" do
+      d = test_doc()
+      assert ResolvedPos.to_string(Node.resolve(d, 0)) == ":0"
+      assert ResolvedPos.to_string(Node.resolve(d, 2)) == "paragraph_0:1"
+      assert ResolvedPos.to_string(Node.resolve(d, 7)) == "blockquote_1/paragraph_0:1"
+    end
+
+    test "marks/1 handles mark.type.spec == nil safely" do
+      schema = test_schema()
+      em_type = %{schema.marks["em"] | spec: nil}
+      em_mark = %ProsemirrorEx.Model.Mark{type: em_type, attrs: %{}}
+      t = Schema.text(schema, "hi", [em_mark])
+      p_node = NodeType.create(schema.nodes["paragraph"], nil, [t])
+      d = NodeType.create(schema.nodes["doc"], nil, [p_node])
+
+      rpos = Node.resolve(d, 2)
+      assert length(ResolvedPos.marks(rpos)) == 1
+    end
   end
 end

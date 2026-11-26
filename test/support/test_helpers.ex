@@ -15,7 +15,7 @@ defmodule ProsemirrorEx.TestHelpers do
       # tags["a"] => 6 (position of <a> marker in the document)
   """
 
-  alias ProsemirrorEx.Model.{Schema, Node, Fragment, Mark, NodeType, MarkType}
+  alias ProsemirrorEx.Model.{Schema, Node, Fragment, Mark, NodeType, MarkType, Utf16}
 
   @doc "Returns the standard test schema matching JS prosemirror-test-builder."
   def test_schema do
@@ -210,8 +210,8 @@ defmodule ProsemirrorEx.TestHelpers do
           {text, new_tags} = extract_tags(str, pos)
 
           if text != "" do
-            text_node = Schema.text(schema, text)
-            {nodes ++ [text_node], Map.merge(tags, new_tags), pos + String.length(text)}
+            text_node = %{Schema.text(schema, text) | text_size: Utf16.length(text)}
+            {nodes ++ [text_node], Map.merge(tags, new_tags), pos + Node.node_size(text_node)}
           else
             {nodes, Map.merge(tags, new_tags), pos}
           end
@@ -244,34 +244,28 @@ defmodule ProsemirrorEx.TestHelpers do
     |> then(fn {nodes, tags, _pos} -> {nodes, tags} end)
   end
 
-  defp flatten(_schema, []), do: {[], %{}}
-
   @tag_regex ~r/<(\w+)>/
 
   defp extract_tags(str, base_pos) do
-    # Find all <tag> markers, strip them, and record positions
-    do_extract_tags(str, base_pos, "", %{}, 0)
+    do_extract_tags(str, base_pos, "", %{})
   end
 
-  defp do_extract_tags(str, base_pos, text_acc, tags, offset) do
+  defp do_extract_tags(str, base_pos, text_acc, tags) do
     case Regex.run(@tag_regex, str, return: :index) do
       nil ->
         {text_acc <> str, tags}
 
-      [{match_start, match_len} | _] ->
-        # Get the tag name
-        [_, tag_name] = Regex.run(@tag_regex, str)
-
-        # Text before the tag
-        before = String.slice(str, 0, match_start)
-        after_str = String.slice(str, (match_start + match_len)..-1//1)
+      [{match_start, match_len}, {cap_start, cap_len}] ->
+        tag_name = binary_part(str, cap_start, cap_len)
+        before = binary_part(str, 0, match_start)
+        after_start = match_start + match_len
+        after_str = binary_part(str, after_start, byte_size(str) - after_start)
 
         new_text = text_acc <> before
-        # Position is base_pos + length of text accumulated so far
-        tag_pos = base_pos + String.length(new_text)
+        tag_pos = base_pos + Utf16.length(new_text)
         new_tags = Map.put(tags, tag_name, tag_pos)
 
-        do_extract_tags(after_str, base_pos, new_text, new_tags, offset + match_len)
+        do_extract_tags(after_str, base_pos, new_text, new_tags)
     end
   end
 end

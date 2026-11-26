@@ -9,15 +9,16 @@ defmodule ProsemirrorEx.Model.Replace do
   alias ProsemirrorEx.Model.{
     Fragment,
     Node,
-    ResolvedPos,
+    NodeType,
     ReplaceError,
-    Slice,
-    NodeType
+    ResolvedPos,
+    Slice
   }
 
   @doc """
   Replace the content between `$from` and `$to` with the given slice.
   """
+  @spec replace(ResolvedPos.t(), ResolvedPos.t(), Slice.t()) :: Node.t()
   def replace(%ResolvedPos{} = from_pos, %ResolvedPos{} = to_pos, %Slice{} = slice) do
     if slice.open_start > from_pos.depth do
       raise ReplaceError, "Inserted content deeper than insertion position"
@@ -45,7 +46,6 @@ defmodule ProsemirrorEx.Model.Replace do
       else
         if slice.open_start == 0 and slice.open_end == 0 and
              from_pos.depth == depth and to_pos.depth == depth do
-          # Simple, flat case
           parent = ResolvedPos.parent(from_pos)
           content = parent.content
 
@@ -80,67 +80,74 @@ defmodule ProsemirrorEx.Model.Replace do
     node
   end
 
-  # ── addNode ──────────────────────────────────────────────────────
+  # ── addNode (reversed accumulator) ───────────────────────────────
 
-  defp add_node(child, target) do
-    case target do
-      [] ->
-        [child]
-
-      _ ->
-        last = List.last(target)
-
-        if Node.is_text(child) and Node.same_markup(child, last) do
-          merged = Node.with_text(last, last.text <> child.text)
-          List.replace_at(target, length(target) - 1, merged)
-        else
-          target ++ [child]
-        end
+  defp add_node(child, [last | rest] = rev_target) do
+    if Node.is_text(child) and Node.same_markup(child, last) do
+      merged_size = Node.node_size(last) + Node.node_size(child)
+      merged = Node.with_text_and_size(last, last.text <> child.text, merged_size)
+      [merged | rest]
+    else
+      [child | rev_target]
     end
   end
 
-  # ── addRange ─────────────────────────────────────────────────────
+  defp add_node(child, []), do: [child]
 
-  defp add_range(start_pos, end_pos, depth, target) do
+  # ── addRange (reversed accumulator) ──────────────────────────────
+
+  defp add_range(start_pos, end_pos, depth, rev_target) do
     node = ResolvedPos.node(end_pos || start_pos, depth)
-    start_index = 0
     end_index = if end_pos, do: ResolvedPos.index(end_pos, depth), else: Node.child_count(node)
 
-    {start_index, target} =
+    {start_index, rev_target} =
       if start_pos do
         si = ResolvedPos.index(start_pos, depth)
 
         if ResolvedPos.resolve_depth(start_pos, depth) < start_pos.depth do
-          # $start.depth > depth
-          {si + 1, target}
+          {si + 1, rev_target}
         else
-          text_off = ResolvedPos.text_offset(start_pos)
-
-          if text_off > 0 do
-            node_after = ResolvedPos.node_after(start_pos)
-            {si + 1, add_node(node_after, target)}
+          if ResolvedPos.text_offset(start_pos) > 0 do
+            {si + 1, add_node(ResolvedPos.node_after(start_pos), rev_target)}
           else
-            {si, target}
+            {si, rev_target}
           end
         end
       else
-        {start_index, target}
+        {0, rev_target}
       end
 
-    target =
-      Enum.reduce(start_index..(end_index - 1)//1, target, fn i, acc ->
-        add_node(Node.child(node, i), acc)
-      end)
+    count = end_index - start_index
 
-    target =
-      if end_pos && ResolvedPos.resolve_depth(end_pos, depth) == end_pos.depth &&
-           ResolvedPos.text_offset(end_pos) > 0 do
-        add_node(ResolvedPos.node_before(end_pos), target)
+    rev_target =
+      if count > 0 do
+        children = (node.content || Fragment.empty()).content
+        add_children_slice(Enum.drop(children, start_index), count, rev_target)
       else
-        target
+        rev_target
       end
 
-    target
+    if end_pos && ResolvedPos.resolve_depth(end_pos, depth) == end_pos.depth &&
+         ResolvedPos.text_offset(end_pos) > 0 do
+      add_node(ResolvedPos.node_before(end_pos), rev_target)
+    else
+      rev_target
+    end
+  end
+
+  defp add_children_slice(_children, 0, rev_target), do: rev_target
+  defp add_children_slice([], _count, rev_target), do: rev_target
+
+  defp add_children_slice([child | rest], count, rev_target) do
+    add_children_slice(rest, count - 1, add_node(child, rev_target))
+  end
+
+  defp finalize_fragment(rev_nodes), do: do_finalize_fragment(rev_nodes, [], 0)
+
+  defp do_finalize_fragment([], acc, size), do: Fragment.new(acc, size)
+
+  defp do_finalize_fragment([node | rest], acc, size) do
+    do_finalize_fragment(rest, [node | acc], size + Node.node_size(node))
   end
 
   # ── close ────────────────────────────────────────────────────────
@@ -173,66 +180,61 @@ defmodule ProsemirrorEx.Model.Replace do
         nil
       end
 
-    content = []
-    content = add_range(nil, from_pos, depth, content)
+    rev_content = add_range(nil, from_pos, depth, [])
 
-    content =
+    rev_content =
       if open_start && open_end &&
            ResolvedPos.index(start_pos, depth) == ResolvedPos.index(end_pos, depth) do
         check_join(open_start, open_end)
 
         add_node(
           close(open_start, replace_three_way(from_pos, start_pos, end_pos, to_pos, depth + 1)),
-          content
+          rev_content
         )
       else
-        content =
+        rev_content =
           if open_start do
             add_node(
               close(open_start, replace_two_way(from_pos, start_pos, depth + 1)),
-              content
+              rev_content
             )
           else
-            content
+            rev_content
           end
 
-        content = add_range(start_pos, end_pos, depth, content)
+        rev_content = add_range(start_pos, end_pos, depth, rev_content)
 
-        content =
-          if open_end do
-            add_node(
-              close(open_end, replace_two_way(end_pos, to_pos, depth + 1)),
-              content
-            )
-          else
-            content
-          end
-
-        content
+        if open_end do
+          add_node(
+            close(open_end, replace_two_way(end_pos, to_pos, depth + 1)),
+            rev_content
+          )
+        else
+          rev_content
+        end
       end
 
-    content = add_range(to_pos, nil, depth, content)
+    rev_content = add_range(to_pos, nil, depth, rev_content)
 
-    Fragment.from(content)
+    finalize_fragment(rev_content)
   end
 
   # ── replaceTwoWay ───────────────────────────────────────────────
 
   defp replace_two_way(from_pos, to_pos, depth) do
-    content = []
-    content = add_range(nil, from_pos, depth, content)
+    rev_content = add_range(nil, from_pos, depth, [])
 
-    content =
+    rev_content =
       if from_pos.depth > depth do
         type = joinable(from_pos, to_pos, depth + 1)
-        add_node(close(type, replace_two_way(from_pos, to_pos, depth + 1)), content)
+        add_node(close(type, replace_two_way(from_pos, to_pos, depth + 1)), rev_content)
       else
-        content
+        rev_content
       end
 
-    content = add_range(to_pos, nil, depth, content)
+    rev_content = add_range(to_pos, nil, depth, rev_content)
 
-    Fragment.from(content)
+    finalize_fragment(rev_content)
   end
 
   # ── prepareSliceForReplace ─────────────────────────────────────
