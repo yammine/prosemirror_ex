@@ -37,7 +37,7 @@ Add `prosemirror_ex` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:prosemirror_ex, "~> 0.3.0"}
+    {:prosemirror_ex, "~> 0.4.0"}
   ]
 end
 ```
