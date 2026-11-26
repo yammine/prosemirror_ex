@@ -56,5 +56,16 @@ defmodule ProsemirrorEx.Model.CompareDeepTest do
       assert CompareDeep.compare(%{"a" => nil}, %{"a" => nil})
       refute CompareDeep.compare(%{"a" => nil}, %{})
     end
+
+    test "handles structs and strict numeric equality" do
+      s1 = %URI{path: "/a"}
+      s2 = %URI{path: "/a"}
+      s3 = %URI{path: "/b"}
+
+      assert CompareDeep.compare(s1, s2)
+      refute CompareDeep.compare(s1, s3)
+      refute CompareDeep.compare(s1, %{path: "/a"})
+      refute CompareDeep.compare(1, 1.0)
+    end
   end
 end

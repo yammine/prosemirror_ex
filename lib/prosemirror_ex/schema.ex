@@ -9,6 +9,6 @@ defmodule ProsemirrorEx.Schema do
   or composed into custom schemas.
 
   * `ProsemirrorEx.Schema.Basic` — doc, paragraph, blockquote, heading, etc.
-  * `ProsemirrorEx.Schema.List` — ordered and bullet lists (when available)
+  * `ProsemirrorEx.Schema.List` — ordered and bullet lists
   """
 end

@@ -73,6 +73,19 @@ defmodule ProsemirrorEx.Schema.ListTest do
 
       assert spec["attrs"] == %{"order" => %{"default" => 1}}
     end
+
+    test "deduplicates existing list node names without duplicating entries" do
+      nodes =
+        Basic.nodes()
+        |> List.add_list_nodes("paragraph", "block")
+        |> List.add_list_nodes("paragraph block*", "block")
+
+      names = Enum.map(nodes, &elem(&1, 0))
+      assert length(names) == length(Enum.uniq(names))
+
+      {_name, li_spec} = Enum.find(nodes, fn {n, _} -> n == "list_item" end)
+      assert li_spec["content"] == "paragraph block*"
+    end
   end
 
   describe "composed schema" do

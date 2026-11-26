@@ -1014,5 +1014,334 @@ defmodule ProsemirrorEx.Model.SchemaTest do
 
       assert NodeType.check_attrs(schema.nodes["heading"], %{"level" => 2}) == :ok
     end
+
+    test "supports JS string validate specs and nil values" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "block+"}},
+            {"widget",
+             %{
+               "group" => "block",
+               "attrs" => %{
+                 "title" => %{"default" => nil, "validate" => "string|null"},
+                 "count" => %{"default" => 0, "validate" => "number"},
+                 "active" => %{"default" => true, "validate" => "boolean"}
+               }
+             }},
+            {"text", %{"group" => "inline"}}
+          ]
+        })
+
+      widget = schema.nodes["widget"]
+
+      assert NodeType.check_attrs(widget, %{"title" => "ok", "count" => 3, "active" => false}) ==
+               :ok
+
+      assert NodeType.check_attrs(widget, %{"title" => nil, "count" => 1.5, "active" => true}) ==
+               :ok
+
+      assert_raise RuntimeError, ~r/Expected value of type string\|null/, fn ->
+        NodeType.check_attrs(widget, %{"title" => 123, "count" => 1, "active" => true})
+      end
+
+      assert_raise RuntimeError, ~r/Expected value of type number/, fn ->
+        NodeType.check_attrs(widget, %{"title" => nil, "count" => "1", "active" => true})
+      end
+
+      assert_raise RuntimeError, ~r/Expected value of type boolean/, fn ->
+        NodeType.check_attrs(widget, %{"title" => nil, "count" => 1, "active" => "yes"})
+      end
+
+      # nil values map treated as empty
+      assert NodeType.check_attrs(schema.nodes["doc"], nil) == :ok
+    end
+
+    test "check_attrs_map rejects unknown keys and non-map values" do
+      schema = test_schema()
+      heading = schema.nodes["heading"]
+
+      assert NodeType.check_attrs_map(heading, nil) == :ok
+      assert NodeType.check_attrs_map(heading, %{"level" => 2}) == :ok
+
+      assert_raise RuntimeError, ~r/Unsupported attribute bogus/, fn ->
+        NodeType.check_attrs_map(heading, %{"bogus" => 1})
+      end
+
+      assert_raise RuntimeError, ~r/Invalid attributes/, fn ->
+        NodeType.check_attrs_map(heading, "not a map")
+      end
+    end
+  end
+
+  # ── Resource safety, nil/empty specs, groups, deduplication, and parity ──
+
+  describe "ETS safety, process dict cleanliness, and Schema.new edge cases" do
+    test "does not leak ETS tables across 100 Schema.new/1 calls" do
+      # Warm up once
+      _ = test_schema()
+      before_count = length(:ets.all())
+
+      for _ <- 1..100 do
+        _ = test_schema()
+      end
+
+      after_count = length(:ets.all())
+      assert after_count == before_count
+    end
+
+    test "schema built in exited Task process remains fully usable in caller" do
+      schema = Task.async(fn -> test_schema() end) |> Task.await()
+
+      p = Schema.node(schema, "paragraph", nil, [Schema.text(schema, "hello")])
+      assert NodeType.valid_content(schema.nodes["doc"], Fragment.from([p]))
+
+      wrapping =
+        ProsemirrorEx.Model.ContentMatch.find_wrapping(
+          schema.nodes["doc"].content_match,
+          schema.nodes["text"]
+        )
+
+      assert Enum.map(wrapping, & &1.name) == ["paragraph"]
+    end
+
+    test "does not pollute process dictionary on success or error" do
+      before_keys = Process.get_keys()
+      _ = test_schema()
+      assert Process.get_keys() == before_keys
+
+      assert_raise RuntimeError, fn ->
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "nonexistent+"}},
+            {"text", %{}}
+          ]
+        })
+      end
+
+      assert Process.get_keys() == before_keys
+    end
+
+    test "handles explicit nil for marks, topNode, node marks/content, and mark excludes" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "block+"}},
+            {"paragraph", %{"content" => "inline*", "group" => "block", "marks" => nil}},
+            {"hr", %{"content" => nil, "group" => "block"}},
+            {"text", %{"group" => "inline"}}
+          ],
+          "marks" => nil,
+          "topNode" => nil
+        })
+
+      assert schema.top_node_type.name == "doc"
+      assert schema.nodes["paragraph"].mark_set == nil
+      assert schema.nodes["hr"].is_leaf == true
+
+      schema_with_mark_nil_excl =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "text*"}},
+            {"text", %{}}
+          ],
+          "marks" => [
+            {"em", %{"excludes" => nil}}
+          ]
+        })
+
+      em = schema_with_mark_nil_excl.marks["em"]
+      assert MarkType.excludes(em, em) == true
+    end
+
+    test "empty group string produces empty groups list" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "paragraph+"}},
+            {"paragraph", %{"content" => "text*", "group" => ""}},
+            {"text", %{}}
+          ]
+        })
+
+      assert schema.nodes["paragraph"].groups == []
+    end
+
+    test "linebreakReplacement validation and setting" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "paragraph+"}},
+            {"paragraph", %{"content" => "inline*"}},
+            {"text", %{"group" => "inline"}},
+            {"br", %{"inline" => true, "group" => "inline", "linebreakReplacement" => true}}
+          ]
+        })
+
+      assert schema.linebreak_replacement.name == "br"
+      assert schema.linebreak_replacement.schema != nil
+
+      assert_raise RuntimeError, ~r/Multiple linebreak nodes/, fn ->
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "text*"}},
+            {"text", %{}},
+            {"br1", %{"inline" => true, "linebreakReplacement" => true}},
+            {"br2", %{"inline" => true, "linebreakReplacement" => true}}
+          ]
+        })
+      end
+
+      assert_raise RuntimeError, ~r/must be inline leaf nodes/, fn ->
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "block_br+"}},
+            {"block_br", %{"linebreakReplacement" => true}},
+            {"text", %{}}
+          ]
+        })
+      end
+
+      assert_raise RuntimeError, ~r/must be inline leaf nodes/, fn ->
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "inline_nonleaf+"}},
+            {"inline_nonleaf",
+             %{"inline" => true, "content" => "text*", "linebreakReplacement" => true}},
+            {"text", %{}}
+          ]
+        })
+      end
+    end
+
+    test "text node with attrs raises error" do
+      assert_raise RuntimeError, ~r/text node type should not have attributes/, fn ->
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "text*"}},
+            {"text", %{"attrs" => %{"x" => %{"default" => 1}}}}
+          ]
+        })
+      end
+    end
+
+    test "is_atom respects atom => true on non-leaf nodes" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "box+"}},
+            {"box", %{"content" => "text*", "atom" => true}},
+            {"text", %{}}
+          ]
+        })
+
+      assert schema.nodes["box"].is_leaf == false
+      assert schema.nodes["box"].is_atom == true
+    end
+
+    test "resolves mark groups in node marks and mark excludes" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "paragraph+"}},
+            {"paragraph", %{"content" => "text*", "marks" => "style"}},
+            {"text", %{}}
+          ],
+          "marks" => [
+            {"em", %{"group" => "style"}},
+            {"strong", %{"group" => "style"}},
+            {"code", %{"excludes" => "style"}}
+          ]
+        })
+
+      p = schema.nodes["paragraph"]
+      assert NodeType.allows_mark_type(p, schema.marks["em"])
+      assert NodeType.allows_mark_type(p, schema.marks["strong"])
+      refute NodeType.allows_mark_type(p, schema.marks["code"])
+
+      assert MarkType.excludes(schema.marks["code"], schema.marks["em"])
+      assert MarkType.excludes(schema.marks["code"], schema.marks["strong"])
+      refute MarkType.excludes(schema.marks["code"], schema.marks["code"])
+    end
+
+    test "deduplicates duplicate node and mark names preserving order" do
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "paragraph+"}},
+            {"paragraph", %{"content" => "text*"}},
+            {"paragraph", %{"content" => "text*", "group" => "block"}},
+            {"text", %{}}
+          ],
+          "marks" => [
+            {"em", %{}},
+            {"strong", %{}},
+            {"em", %{"excludes" => ""}}
+          ]
+        })
+
+      assert schema.nodes["paragraph"].groups == ["block"]
+      assert schema.marks["strong"].rank == 0
+      assert schema.marks["em"].rank == 1
+      assert schema.marks["em"].excluded == []
+    end
+
+    test "back-references are fresh across ContentMatch edges and MarkType instances" do
+      schema = test_schema()
+
+      {first_edge_type, _} =
+        ProsemirrorEx.Model.ContentMatch.edge(schema.nodes["doc"].content_match, 0)
+
+      assert first_edge_type.schema != nil
+      assert first_edge_type.content_match != nil
+
+      em = schema.marks["em"]
+      assert em.instance.type.schema != nil
+      assert hd(em.instance.type.excluded).schema != nil
+    end
+
+    test "Schema.text/3 rejects non-binary text" do
+      schema = test_schema()
+
+      for bad <- [nil, 123] do
+        assert_raise FunctionClauseError, fn ->
+          Schema.text(schema, bad)
+        end
+      end
+    end
+
+    test "NodeType.create_checked/4 defaults and text guard" do
+      schema = test_schema()
+      p = NodeType.create_checked(schema.nodes["paragraph"])
+      assert p.type.name == "paragraph"
+
+      assert_raise RuntimeError, fn ->
+        NodeType.create_checked(schema.nodes["text"])
+      end
+    end
+
+    test "NodeType.create_and_fill/4 rejects text node type" do
+      schema = test_schema()
+
+      assert_raise RuntimeError, fn ->
+        NodeType.create_and_fill(schema.nodes["text"])
+      end
+    end
+
+    test "NodeType.leaf_text/1 reads leafText spec" do
+      fn_spec = fn _node -> "[br]" end
+
+      schema =
+        Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "inline*"}},
+            {"text", %{"group" => "inline"}},
+            {"br", %{"inline" => true, "group" => "inline", "leafText" => fn_spec}}
+          ]
+        })
+
+      assert NodeType.leaf_text(schema.nodes["br"]) == fn_spec
+      assert NodeType.leaf_text(schema.nodes["text"]) == nil
+    end
   end
 end

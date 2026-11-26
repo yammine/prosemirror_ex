@@ -66,7 +66,8 @@ defmodule ProsemirrorEx.Schema.Basic do
   @hard_break_spec %{
     "inline" => true,
     "group" => "inline",
-    "selectable" => false
+    "selectable" => false,
+    "linebreakReplacement" => true
   }
 
   @link_spec %{
@@ -84,6 +85,7 @@ defmodule ProsemirrorEx.Schema.Basic do
   @doc """
   Node specifications as `{name, spec}` tuples for `Schema.new/1`.
   """
+  @spec nodes() :: [{String.t(), map()}]
   def nodes do
     [
       {"doc", @doc_spec},
@@ -101,6 +103,7 @@ defmodule ProsemirrorEx.Schema.Basic do
   @doc """
   Mark specifications as `{name, spec}` tuples for `Schema.new/1`.
   """
+  @spec marks() :: [{String.t(), map()}]
   def marks do
     [
       {"link", @link_spec},
@@ -113,6 +116,7 @@ defmodule ProsemirrorEx.Schema.Basic do
   @doc """
   A compiled schema with the basic node and mark types.
   """
+  @spec schema() :: Schema.t()
   def schema do
     Schema.new(%{"nodes" => nodes(), "marks" => marks()})
   end
@@ -120,6 +124,7 @@ defmodule ProsemirrorEx.Schema.Basic do
   @doc """
   Individual node spec maps keyed by name, for extending or composing schemas.
   """
+  @spec node_specs() :: %{String.t() => map()}
   def node_specs do
     %{
       "doc" => @doc_spec,
@@ -137,6 +142,7 @@ defmodule ProsemirrorEx.Schema.Basic do
   @doc """
   Individual mark spec maps keyed by name, for extending or composing schemas.
   """
+  @spec mark_specs() :: %{String.t() => map()}
   def mark_specs do
     %{
       "link" => @link_spec,

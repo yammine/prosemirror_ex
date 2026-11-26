@@ -179,7 +179,7 @@ defmodule ProsemirrorEx.Model.ContentMatchTest do
   defp make_node(type_name, children \\ []) do
     type = Map.fetch!(node_types(), type_name)
     content = Fragment.from_array(children)
-    %PmNode{type: type, attrs: type.default_attrs || %{}, content: content, marks: []}
+    %PmNode{type: type, attrs: type.default_attrs, content: content, marks: []}
   end
 
   defp doc(children \\ []), do: make_node("doc", children)
@@ -814,6 +814,106 @@ defmodule ProsemirrorEx.Model.ContentMatchTest do
       cm_a = get("paragraph")
       cm_b = get("block+")
       assert ContentMatch.compatible(cm_a, cm_b) == true
+    end
+  end
+
+  # ── Syntax / semantic errors & edge cases ────────────────────────
+
+  describe "parse errors and edge cases" do
+    test "rejects mixing inline and block content" do
+      assert_raise RuntimeError, ~r/Mixing inline and block/, fn ->
+        get("paragraph text")
+      end
+
+      assert_raise RuntimeError, ~r/Mixing inline and block/, fn ->
+        get("(paragraph | image)")
+      end
+    end
+
+    test "rejects unknown node type or group" do
+      assert_raise RuntimeError, ~r/No node type or group 'bogus' found/, fn ->
+        get("bogus")
+      end
+    end
+
+    test "rejects dead-end required positions with only non-generatable nodes" do
+      types =
+        Map.put(node_types(), "req_img", %NodeType{
+          name: "req_img",
+          groups: ["inline"],
+          is_block: false,
+          is_leaf: true,
+          is_text: false,
+          is_inline: true,
+          has_required_attrs: true
+        })
+
+      assert_raise RuntimeError, ~r/Only non-generatable nodes/, fn ->
+        ContentMatch.parse("text+", types)
+      end
+
+      assert_raise RuntimeError, ~r/Only non-generatable nodes/, fn ->
+        ContentMatch.parse("req_img+", types)
+      end
+    end
+
+    test "rejects trailing text, unclosed parens, and unclosed braces" do
+      assert_raise RuntimeError, ~r/Unexpected trailing text/, fn ->
+        get("paragraph )")
+      end
+
+      assert_raise RuntimeError, ~r/Missing closing paren/, fn ->
+        get("(paragraph")
+      end
+
+      assert_raise RuntimeError, ~r/Unclosed braced range/, fn ->
+        get("paragraph{2")
+      end
+
+      assert_raise RuntimeError, ~r/Unclosed braced range/, fn ->
+        get("paragraph{2, 3")
+      end
+
+      assert_raise RuntimeError, ~r/Expected number/, fn ->
+        get("paragraph{2,")
+      end
+    end
+
+    test "handles {0} and {0, 2} ranges and rejects inverted {2, 1} range" do
+      valid("hard_break{0}", "")
+      invalid("hard_break{0}", "hard_break")
+
+      valid("hard_break{0, 2}", "")
+      valid("hard_break{0, 2}", "hard_break hard_break")
+      invalid("hard_break{0, 2}", "hard_break hard_break hard_break")
+
+      assert_raise RuntimeError, ~r/Invalid range \{2, 1\}/, fn ->
+        get("hard_break{2, 1}")
+      end
+    end
+
+    test "parse/3 respects explicit node_order for group resolution" do
+      types = make_node_types()
+      cm = ContentMatch.parse("block+", types, ["doc", "heading", "paragraph", "blockquote"])
+      {first_type, _} = ContentMatch.edge(cm, 0)
+      assert first_type.name == "heading"
+    end
+
+    test "match_fragment/4 slices start..end accurately on large fragments" do
+      cm = get("paragraph+")
+      children = List.duplicate(p(), 500)
+      frag = Fragment.from_array(children)
+
+      assert ContentMatch.match_fragment(cm, frag).valid_end == true
+      assert ContentMatch.match_fragment(cm, frag, 100, 250).valid_end == true
+      assert ContentMatch.match_fragment(cm, frag, 5, 5) == cm
+    end
+
+    test "parse/3 and fill_before/4 do not touch process dictionary" do
+      before_keys = Process.get_keys()
+      cm = get("heading paragraph horizontal_rule")
+      _ = ContentMatch.fill_before(cm, doc([hr()]).content, true)
+      assert Process.get_keys() == before_keys
     end
   end
 end
