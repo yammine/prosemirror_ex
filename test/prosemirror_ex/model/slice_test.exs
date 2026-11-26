@@ -565,4 +565,45 @@ defmodule ProsemirrorEx.Model.SliceTest do
       assert restored.open_end == 1
     end
   end
+
+  describe "edge cases" do
+    test "Slice.max_open with open_isolating=false stops at isolating nodes" do
+      schema =
+        ProsemirrorEx.Model.Schema.new(%{
+          "nodes" => [
+            {"doc", %{"content" => "block+"}},
+            {"paragraph", %{"content" => "text*", "group" => "block"}},
+            {"callout", %{"content" => "block+", "group" => "block", "isolating" => true}},
+            {"text", %{}}
+          ]
+        })
+
+      text = ProsemirrorEx.Model.Schema.text(schema, "hi")
+      para = ProsemirrorEx.Model.NodeType.create(schema.nodes["paragraph"], nil, [text])
+      callout = ProsemirrorEx.Model.NodeType.create(schema.nodes["callout"], nil, [para])
+      frag = Fragment.from(callout)
+
+      open_all = Slice.max_open(frag, true)
+      assert open_all.open_start == 2
+      assert open_all.open_end == 2
+
+      closed_isolating = Slice.max_open(frag, false)
+      assert closed_isolating.open_start == 0
+      assert closed_isolating.open_end == 0
+    end
+
+    test "Slice.remove_between with to < from is a no-op" do
+      {p_node, _} = p(["hello"])
+      slice = Slice.new(Fragment.from(p_node), 1, 1)
+      result = Slice.remove_between(slice, 4, 2)
+      assert Slice.eq(result, slice)
+    end
+
+    test "Slice.insert_at returns nil when parent disallows inserted content" do
+      {p_node, _} = p(["hello"])
+      slice = Slice.new(Fragment.from(p_node), 1, 1)
+      {nested_p, _} = p(["bad"])
+      assert Slice.insert_at(slice, 2, Fragment.from(nested_p)) == nil
+    end
+  end
 end

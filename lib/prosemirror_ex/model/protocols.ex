@@ -24,8 +24,7 @@ defimpl Inspect, for: ProsemirrorEx.Model.Mark do
     else
       attrs_str =
         mark.attrs
-        |> Enum.map(fn {k, v} -> "#{k}=#{Kernel.inspect(v)}" end)
-        |> Enum.join(", ")
+        |> Enum.map_join(", ", fn {k, v} -> "#{k}=#{Kernel.inspect(v)}" end)
 
       "#{name}(#{attrs_str})"
     end
@@ -35,6 +34,20 @@ end
 defimpl Inspect, for: ProsemirrorEx.Model.Slice do
   def inspect(slice, _opts) do
     ProsemirrorEx.Model.Slice.to_string(slice)
+  end
+end
+
+defimpl Inspect, for: ProsemirrorEx.Model.ResolvedPos do
+  def inspect(rpos, _opts) do
+    ProsemirrorEx.Model.ResolvedPos.to_string(rpos)
+  end
+end
+
+defimpl Inspect, for: ProsemirrorEx.Model.NodeRange do
+  def inspect(range, _opts) do
+    from_s = ProsemirrorEx.Model.ResolvedPos.to_string(range.from)
+    to_s = ProsemirrorEx.Model.ResolvedPos.to_string(range.to)
+    "<NodeRange #{from_s}..#{to_s} depth=#{range.depth}>"
   end
 end
 
@@ -55,9 +68,39 @@ defimpl String.Chars, for: ProsemirrorEx.Model.Fragment do
   end
 end
 
+defimpl String.Chars, for: ProsemirrorEx.Model.Mark do
+  def to_string(mark) do
+    name = mark.type.name
+
+    if mark.attrs == nil or mark.attrs == %{} do
+      "#{name}"
+    else
+      attrs_str =
+        mark.attrs
+        |> Enum.map_join(", ", fn {k, v} -> "#{k}=#{Kernel.inspect(v)}" end)
+
+      "#{name}(#{attrs_str})"
+    end
+  end
+end
+
 defimpl String.Chars, for: ProsemirrorEx.Model.Slice do
   def to_string(slice) do
     ProsemirrorEx.Model.Slice.to_string(slice)
+  end
+end
+
+defimpl String.Chars, for: ProsemirrorEx.Model.ResolvedPos do
+  def to_string(rpos) do
+    ProsemirrorEx.Model.ResolvedPos.to_string(rpos)
+  end
+end
+
+defimpl String.Chars, for: ProsemirrorEx.Model.NodeRange do
+  def to_string(range) do
+    from_s = ProsemirrorEx.Model.ResolvedPos.to_string(range.from)
+    to_s = ProsemirrorEx.Model.ResolvedPos.to_string(range.to)
+    "<NodeRange #{from_s}..#{to_s} depth=#{range.depth}>"
   end
 end
 
