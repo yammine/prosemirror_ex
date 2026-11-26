@@ -13,6 +13,7 @@ defmodule ProsemirrorEx.Model.Schema do
   alias ProsemirrorEx.Model.MarkType
   alias ProsemirrorEx.Model.Node, as: PmNode
   alias ProsemirrorEx.Model.NodeType
+  alias ProsemirrorEx.Model.Utf16
 
   @type t :: %__MODULE__{
           spec: map(),
@@ -371,6 +372,7 @@ defmodule ProsemirrorEx.Model.Schema do
       type: type,
       attrs: type.default_attrs || %{},
       text: text,
+      text_size: Utf16.length(text),
       marks: Mark.set_from(marks),
       content: Fragment.empty()
     }

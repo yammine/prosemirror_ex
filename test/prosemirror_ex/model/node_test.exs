@@ -967,10 +967,11 @@ defmodule ProsemirrorEx.Model.NodeTest do
   end
 
   describe "nil content, spec keys, boundary, and escaping edge cases" do
-    test "Schema.text node with content: nil works across all Node accessors" do
+    test "Schema.text node and text node with content: nil work across all Node accessors" do
       schema = ProsemirrorEx.TestHelpers.test_schema()
-      t = ProsemirrorEx.Model.Schema.text(schema, "hello")
-      assert t.content == nil
+      schema_t = ProsemirrorEx.Model.Schema.text(schema, "hello")
+      assert schema_t.content == Fragment.empty()
+      t = %{schema_t | content: nil}
 
       assert PmNode.node_size(t) == 5
       assert PmNode.child_count(t) == 0
